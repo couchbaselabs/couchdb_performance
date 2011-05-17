@@ -383,22 +383,14 @@ terminate(_Reason, #file{fd = Fd, writer = Writer}) ->
     ok = file:close(Fd).
 
 handle_call({pread_iolist, Pos}, _From, #file{fd = Fd} = File) ->
-    {RawData, NextPos} = try
-        % up to 8Kbs of read ahead
-        read_raw_iolist_int(Fd, Pos, 2 * ?SIZE_BLOCK - (Pos rem ?SIZE_BLOCK))
-    catch
-    _:_ ->
-        read_raw_iolist_int(Fd, Pos, 4)
-    end,
-    <<Prefix:1/integer, Len:31/integer, RestRawData/binary>> =
-        iolist_to_binary(RawData),
-    case Prefix of
-    1 ->
-        {Md5, IoList} = extract_md5(
-            maybe_read_more_iolist(RestRawData, 16 + Len, NextPos, Fd)),
+    {LenInfo, NextPos} = read_raw_iolist_int(Fd, Pos, 4),
+    case iolist_to_binary(LenInfo) of
+    <<1:1/integer, Len:31/integer>> ->
+        {RawData, _} = read_raw_iolist_int(Fd, NextPos, 16 + Len),
+        {Md5, IoList} = extract_md5(RawData),
         {reply, {ok, IoList, Md5}, File};
-    0 ->
-        IoList = maybe_read_more_iolist(RestRawData, Len, NextPos, Fd),
+    <<0:1/integer, Len:31/integer>> ->
+        {IoList, _} = read_raw_iolist_int(Fd, NextPos, Len),
         {reply, {ok, IoList, <<>>}, File}
     end;
 
@@ -493,15 +485,6 @@ read_raw_iolist_int(ReadFd, Pos, Len) ->
     TotalBytes = calculate_total_read_len(BlockOffset, Len),
     {ok, <<RawBin:TotalBytes/binary>>} = file:pread(ReadFd, Pos, TotalBytes),
     {remove_block_prefixes(BlockOffset, RawBin), Pos + TotalBytes}.
-
-maybe_read_more_iolist(Buffer, DataSize, _, _)
-    when DataSize =< byte_size(Buffer) ->
-    <<Data:DataSize/binary, _/binary>> = Buffer,
-    [Data];
-maybe_read_more_iolist(Buffer, DataSize, NextPos, Fd) ->
-    {Missing, _} =
-        read_raw_iolist_int(Fd, NextPos, DataSize - byte_size(Buffer)),
-    [Buffer, Missing].
 
 -spec extract_md5(iolist()) -> {binary(), iolist()}.
 extract_md5(FullIoList) ->
