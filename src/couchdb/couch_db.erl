@@ -225,7 +225,7 @@ get_full_doc_info(Db, Id) ->
     Result.
 
 get_full_doc_infos(Db, Ids) ->
-    couch_btree:lookup(Db#db.fulldocinfo_by_id_btree, Ids).
+    couch_btree:lookup(by_id_btree(Db), Ids).
 
 increment_update_seq(#db{update_pid=UpdatePid}) ->
     gen_server:call(UpdatePid, increment_update_seq).
@@ -295,7 +295,7 @@ sum_tree_sizes(Acc, [T | Rest]) ->
     end.
 
 get_design_docs(Db) ->
-    {ok,_, Docs} = couch_btree:fold(Db#db.fulldocinfo_by_id_btree,
+    {ok,_, Docs} = couch_btree:fold(by_id_btree(Db),
         fun(#full_doc_info{id= <<"_design/",_/binary>>}=FullDocInfo, _Reds, AccDocs) ->
             {ok, Doc} = open_doc_int(Db, FullDocInfo, [ejson_body]),
             {ok, [Doc | AccDocs]};
@@ -703,7 +703,7 @@ update_docs(Db, Docs, Options, replicated_changes) ->
         DocErrors = [],
         DocBuckets3 = DocBuckets
     end,
-    DocBuckets4 = [[doc_flush_atts(check_dup_atts(Doc), Db#db.fd)
+    DocBuckets4 = [[doc_flush_atts(check_dup_atts(Doc), Db#db.updater_fd)
             || Doc <- Bucket] || Bucket <- DocBuckets3],
     {ok, []} = write_and_commit(Db, DocBuckets4, [], [merge_conflicts | Options]),
     {ok, DocErrors};
@@ -767,7 +767,7 @@ update_docs(Db, Docs, Options, interactive_edit) ->
                 true -> [] end ++ Options,
         DocBuckets3 = [[
                 doc_flush_atts(set_new_att_revpos(
-                        Doc), Db#db.fd)
+                        Doc), Db#db.updater_fd)
                 || Doc <- B] || B <- DocBuckets2],
         
         {DocBuckets4, IdRevs} = new_revs(DocBuckets3, [], []),
@@ -839,7 +839,7 @@ write_and_commit(#db{update_pid=UpdatePid}=Db, DocBuckets1,
             % compaction. Retry by reopening the db and writing to the current file
             {ok, Db2} = open_ref_counted(Db#db.main_pid, self()),
             DocBuckets2 = [
-                [doc_flush_atts(Doc, Db2#db.fd) || Doc <- Bucket] ||
+                [doc_flush_atts(Doc, Db2#db.updater_fd) || Doc <- Bucket] ||
                 Bucket <- DocBuckets1
             ],
             % We only retry once
@@ -1047,12 +1047,12 @@ changes_since(Db, Style, StartSeq, Fun, Options, Acc) ->
             end,
             Fun(DocInfo2, Acc2)
         end,
-    {ok, _LastReduction, AccOut} = couch_btree:fold(Db#db.docinfo_by_seq_btree,
+    {ok, _LastReduction, AccOut} = couch_btree:fold(by_seq_btree(Db),
         Wrapper, Acc, [{start_key, StartSeq + 1}] ++ Options),
     {ok, AccOut}.
 
 count_changes_since(Db, SinceSeq) ->
-    BTree = Db#db.docinfo_by_seq_btree,
+    BTree = by_seq_btree(Db),
     {ok, Changes} =
     couch_btree:fold_reduce(BTree,
         fun(_SeqStart, PartialReds, 0) ->
@@ -1063,13 +1063,13 @@ count_changes_since(Db, SinceSeq) ->
 
 enum_docs_since(Db, SinceSeq, InFun, Acc, Options) ->
     {ok, LastReduction, AccOut} = couch_btree:fold(
-        Db#db.docinfo_by_seq_btree, InFun, Acc,
+        by_seq_btree(Db), InFun, Acc,
         [{start_key, SinceSeq + 1} | Options]),
     {ok, enum_docs_since_reduce_to_count(LastReduction), AccOut}.
 
 enum_docs(Db, InFun, InAcc, Options) ->
     {ok, LastReduce, OutAcc} = couch_btree:fold(
-        Db#db.fulldocinfo_by_id_btree, InFun, InAcc, Options),
+        by_id_btree(Db), InFun, InAcc, Options),
     {ok, enum_docs_reduce_to_count(LastReduce), OutAcc}.
 
 % server functions
@@ -1171,7 +1171,7 @@ open_doc_revs_int(Db, IdRevs, Options) ->
         IdRevs, LookupResults).
 
 open_doc_int(Db, <<?LOCAL_DOC_PREFIX, _/binary>> = Id, Options) ->
-    case couch_btree:lookup(Db#db.local_docs_btree, [Id]) of
+    case couch_btree:lookup(local_btree(Db), [Id]) of
     [{ok, {_, {Rev, BodyData}}}] ->
         Doc = #doc{id=Id, revs={0, [?l2b(integer_to_list(Rev))]}, body=BodyData},
         apply_open_options({ok, Doc}, Options);
@@ -1312,3 +1312,12 @@ increment_stat(#db{options = Options}, Stat) ->
     false ->
         couch_stats_collector:increment(Stat)
     end.
+
+local_btree(#db{local_docs_btree = BTree, fd = ReaderFd}) ->
+    BTree#btree{fd = ReaderFd}.
+
+by_seq_btree(#db{docinfo_by_seq_btree = BTree, fd = ReaderFd}) ->
+    BTree#btree{fd = ReaderFd}.
+
+by_id_btree(#db{fulldocinfo_by_id_btree = BTree, fd = ReaderFd}) ->
+    BTree#btree{fd = ReaderFd}.
