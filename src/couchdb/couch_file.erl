@@ -335,14 +335,22 @@ terminate(_Reason, #file{fd = Fd, writer = Writer}) ->
     ok = file:close(Fd).
 
 handle_call({pread_iolist, Pos}, _From, #file{fd = Fd} = File) ->
-    {LenInfo, NextPos} = read_raw_iolist_int(Fd, Pos, 4),
-    case iolist_to_binary(LenInfo) of
-    <<1:1/integer, Len:31/integer>> ->
-        {RawData, _} = read_raw_iolist_int(Fd, NextPos, 16 + Len),
-        {Md5, IoList} = extract_md5(RawData),
+    {RawData, NextPos} = try
+        % up to 8Kbs of read ahead
+        read_raw_iolist_int(Fd, Pos, 2 * ?SIZE_BLOCK - (Pos rem ?SIZE_BLOCK))
+    catch
+    _:_ ->
+        read_raw_iolist_int(Fd, Pos, 4)
+    end,
+    <<Prefix:1/integer, Len:31/integer, RestRawData/binary>> =
+        iolist_to_binary(RawData),
+    case Prefix of
+    1 ->
+        {Md5, IoList} = extract_md5(
+            maybe_read_more_iolist(RestRawData, 16 + Len, NextPos, Fd)),
         {reply, {ok, IoList, Md5}, File};
-    <<0:1/integer, Len:31/integer>> ->
-        {IoList, _} = read_raw_iolist_int(Fd, NextPos, Len),
+    0 ->
+        IoList = maybe_read_more_iolist(RestRawData, Len, NextPos, Fd),
         {reply, {ok, IoList, <<>>}, File}
     end;
 
@@ -426,6 +434,15 @@ load_header(Fd, Block) ->
         iolist_to_binary(remove_block_prefixes(1, RawBin)),
     Md5Sig = couch_util:md5(HeaderBin),
     {ok, HeaderBin}.
+
+maybe_read_more_iolist(Buffer, DataSize, _, _)
+    when DataSize =< byte_size(Buffer) ->
+    <<Data:DataSize/binary, _/binary>> = Buffer,
+    [Data];
+maybe_read_more_iolist(Buffer, DataSize, NextPos, File) ->
+    {Missing, _} =
+        read_raw_iolist_int(File, NextPos, DataSize - byte_size(Buffer)),
+    [Buffer, Missing].
 
 read_raw_iolist_int(ReadFd, {Pos, _Size}, Len) -> % 0110 UPGRADE CODE
     read_raw_iolist_int(ReadFd, Pos, Len);
