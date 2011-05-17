@@ -141,36 +141,51 @@ pread_binary(Fd, Pos) ->
     {ok, iolist_to_binary(L)}.
 
 
-pread_iolist(File, Pos) ->
-    case get(File) of
-    undefined ->
-        {ok, Fd} = gen_server:call(File, get_fd, infinity),
-        put(File, Fd);
-    Fd -> ok
-    end,
-    {RawData, NextPos} = try
-        % up to 8Kbs of read ahead
-        read_raw_iolist_int(Fd, Pos, ?SIZE_BLOCK)
-    catch
-    _:_ ->
-        read_raw_iolist_int(Fd, Pos, 4)
-    end,
-    <<Prefix:1/integer, Len:31/integer, RestRawData/binary>> =
-        iolist_to_binary(RawData),
-    case Prefix of
-    1 ->
-        {Md5, IoList} = extract_md5(
-            maybe_read_more_iolist(RestRawData, 16 + Len, NextPos, Fd)),
+pread_iolist(Fd, Pos) ->
+    case gen_server:call(Fd, {pread_iolist, Pos}, infinity) of
+    {ok, IoList, <<>>} ->
+        {ok, IoList};
+    {ok, IoList, Md5} ->
         case couch_util:md5(IoList) of
         Md5 ->
             {ok, IoList};
         _ ->
             exit({file_corruption, <<"file corruption">>})
         end;
-    0 ->
-        IoList = maybe_read_more_iolist(RestRawData, Len, NextPos, Fd),
-        {ok, IoList}
+    Error ->
+        Error
     end.
+
+%% pread_iolist(File, Pos) ->
+%%     case get(File) of
+%%     undefined ->
+%%         {ok, Fd} = gen_server:call(File, get_fd, infinity),
+%%         put(File, Fd);
+%%     Fd -> ok
+%%     end,
+%%     {RawData, NextPos} = try
+%%         % up to 8Kbs of read ahead
+%%         read_raw_iolist_int(Fd, Pos, ?SIZE_BLOCK)
+%%     catch
+%%     _:_ ->
+%%         read_raw_iolist_int(Fd, Pos, 4)
+%%     end,
+%%     <<Prefix:1/integer, Len:31/integer, RestRawData/binary>> =
+%%         iolist_to_binary(RawData),
+%%     case Prefix of
+%%     1 ->
+%%         {Md5, IoList} = extract_md5(
+%%             maybe_read_more_iolist(RestRawData, 16 + Len, NextPos, Fd)),
+%%         case couch_util:md5(IoList) of
+%%         Md5 ->
+%%             {ok, IoList};
+%%         _ ->
+%%             exit({file_corruption, <<"file corruption">>})
+%%         end;
+%%     0 ->
+%%         IoList = maybe_read_more_iolist(RestRawData, Len, NextPos, Fd),
+%%         {ok, IoList}
+%%     end.
 
     %% {IoListLen, NextPos} = read_raw_iolist_int(Fd, Pos, 4),
     %% <<Prefix:1/integer, Len:31/integer>> = iolist_to_binary(IoListLen),
@@ -301,13 +316,18 @@ init({Filepath, Options, ReturnPid, Ref}) ->
    try
        maybe_create_file(Filepath, Options),
        process_flag(trap_exit, true),
-       ReadFd = case file:open(Filepath, [read, binary]) of
+       ReadFd = case file:open(Filepath, [read, raw, binary]) of
        {ok, Fd} ->
            Fd;
        Error ->
            throw({error, Error})
        end,
-       Writer = spawn_writer(Filepath),
+       case lists:member(read_only, Options) of
+       true ->
+           Writer = nil;
+       false ->
+           Writer = spawn_writer(Filepath)
+       end,
        {ok, Eof} = file:position(ReadFd, eof),
        maybe_track_open_os_files(Options),
        {ok, #file{fd = ReadFd, writer = Writer, eof = Eof}}
@@ -355,10 +375,32 @@ maybe_track_open_os_files(FileOptions) ->
         couch_stats_collector:track_process_count({couchdb, open_os_files})
     end.
 
+terminate(_Reason, #file{fd = Fd, writer = nil}) ->
+    ok = file:close(Fd);
 terminate(_Reason, #file{fd = Fd, writer = Writer}) ->
     exit(Writer, kill),
     receive {'EXIT', Writer, _} -> ok end,
     ok = file:close(Fd).
+
+handle_call({pread_iolist, Pos}, _From, #file{fd = Fd} = File) ->
+    {RawData, NextPos} = try
+        % up to 8Kbs of read ahead
+        read_raw_iolist_int(Fd, Pos, 2 * ?SIZE_BLOCK - (Pos rem ?SIZE_BLOCK))
+    catch
+    _:_ ->
+        read_raw_iolist_int(Fd, Pos, 4)
+    end,
+    <<Prefix:1/integer, Len:31/integer, RestRawData/binary>> =
+        iolist_to_binary(RawData),
+    case Prefix of
+    1 ->
+        {Md5, IoList} = extract_md5(
+            maybe_read_more_iolist(RestRawData, 16 + Len, NextPos, Fd)),
+        {reply, {ok, IoList, Md5}, File};
+    0 ->
+        IoList = maybe_read_more_iolist(RestRawData, Len, NextPos, Fd),
+        {reply, {ok, IoList, <<>>}, File}
+    end;
 
 handle_call(get_fd, _From, #file{fd = Fd} = File) ->
     {reply, {ok, Fd}, File};
