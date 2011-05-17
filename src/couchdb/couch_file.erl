@@ -268,7 +268,7 @@ init({Filepath, Options, ReturnPid, Ref}) ->
    try
        maybe_create_file(Filepath, Options),
        process_flag(trap_exit, true),
-       ReadFd = case file:open(Filepath, [read, binary]) of
+       ReadFd = case file:open(Filepath, [read, binary, raw]) of
        {ok, Fd} ->
            Fd;
        Error ->
