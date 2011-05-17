@@ -141,28 +141,19 @@ pread_binary(Fd, Pos) ->
     {ok, iolist_to_binary(L)}.
 
 
-pread_iolist(File, Pos) ->
-    case get(File) of
-    undefined ->
-        {ok, Fd} = gen_server:call(File, get_fd, infinity),
-        put(File, Fd);
-    Fd -> ok
-    end,
-    {IoListLen, NextPos} = read_raw_iolist_int(Fd, Pos, 4),
-    <<Prefix:1/integer, Len:31/integer>> = iolist_to_binary(IoListLen),
-    case Prefix of
-    1 ->
-        {Bin, _} = read_raw_iolist_int(Fd, NextPos, 16 + Len),
-        {Md5, IoList} = extract_md5(Bin),
+pread_iolist(Fd, Pos) ->
+    case gen_server:call(Fd, {pread_iolist, Pos}, infinity) of
+    {ok, IoList, <<>>} ->
+        {ok, IoList};
+    {ok, IoList, Md5} ->
         case couch_util:md5(IoList) of
         Md5 ->
             {ok, IoList};
         _ ->
             exit({file_corruption, <<"file corruption">>})
         end;
-    0 ->
-        {IoList, _} = read_raw_iolist_int(Fd, NextPos, Len),
-        {ok, IoList}
+    Error ->
+        Error
     end.
 
 
@@ -283,7 +274,12 @@ init({Filepath, Options, ReturnPid, Ref}) ->
        Error ->
            throw({error, Error})
        end,
-       Writer = spawn_writer(Filepath),
+       Writer = case lists:member(read_only, Options) of
+       true ->
+           nil;
+       false ->
+           spawn_writer(Filepath)
+       end,
        {ok, Eof} = file:position(ReadFd, eof),
        maybe_track_open_os_files(Options),
        {ok, #file{fd = ReadFd, writer = Writer, eof = Eof}}
@@ -331,13 +327,32 @@ maybe_track_open_os_files(FileOptions) ->
         couch_stats_collector:track_process_count({couchdb, open_os_files})
     end.
 
+terminate(_Reason, #file{fd = Fd, writer = nil}) ->
+    ok = file:close(Fd);
 terminate(_Reason, #file{fd = Fd, writer = Writer}) ->
     exit(Writer, kill),
     receive {'EXIT', Writer, _} -> ok end,
     ok = file:close(Fd).
 
-handle_call(get_fd, _From, #file{fd = Fd} = File) ->
-    {reply, {ok, Fd}, File};
+handle_call({pread_iolist, Pos}, _From, #file{fd = Fd} = File) ->
+    {RawData, NextPos} = try
+        % up to 8Kbs of read ahead
+        read_raw_iolist_int(Fd, Pos, 2 * ?SIZE_BLOCK - (Pos rem ?SIZE_BLOCK))
+    catch
+    _:_ ->
+        read_raw_iolist_int(Fd, Pos, 4)
+    end,
+    <<Prefix:1/integer, Len:31/integer, RestRawData/binary>> =
+        iolist_to_binary(RawData),
+    case Prefix of
+    1 ->
+        {Md5, IoList} = extract_md5(
+            maybe_read_more_iolist(RestRawData, 16 + Len, NextPos, Fd)),
+        {reply, {ok, IoList, Md5}, File};
+    0 ->
+        IoList = maybe_read_more_iolist(RestRawData, Len, NextPos, Fd),
+        {reply, {ok, IoList, <<>>}, File}
+    end;
 
 handle_call(bytes, _From, #file{eof = Eof} = File) ->
     {reply, {ok, Eof}, File};
@@ -427,6 +442,15 @@ read_raw_iolist_int(ReadFd, Pos, Len) ->
     TotalBytes = calculate_total_read_len(BlockOffset, Len),
     {ok, <<RawBin:TotalBytes/binary>>} = file:pread(ReadFd, Pos, TotalBytes),
     {remove_block_prefixes(BlockOffset, RawBin), Pos + TotalBytes}.
+
+maybe_read_more_iolist(Buffer, DataSize, _, _)
+    when DataSize =< byte_size(Buffer) ->
+    <<Data:DataSize/binary, _/binary>> = Buffer,
+    [Data];
+maybe_read_more_iolist(Buffer, DataSize, NextPos, Fd) ->
+    {Missing, _} =
+        read_raw_iolist_int(Fd, NextPos, DataSize - byte_size(Buffer)),
+    [Buffer, Missing].
 
 -spec extract_md5(iolist()) -> {binary(), iolist()}.
 extract_md5(FullIoList) ->
