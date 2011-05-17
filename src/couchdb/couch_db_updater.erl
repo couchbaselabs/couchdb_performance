@@ -686,6 +686,8 @@ update_docs_int(Db, DocsList, NonRepDocs, MergeConflicts, FullCommit) ->
         docinfo_by_seq_btree = DocInfoBySeqBTree2,
         update_seq = NewSeq},
 
+    ok = couch_file:flush(Db3#db.updater_fd),
+
     % Check if we just updated any design documents, and update the validation
     % funs if we did.
     case lists:any(
@@ -763,7 +765,6 @@ commit_data(Db, true) ->
 commit_data(Db, _) ->
     #db{
         updater_fd = Fd,
-        filepath = Filepath,
         header = OldHeader,
         fsync_options = FsyncOptions,
         waiting_delayed_commit = Timer
@@ -774,14 +775,14 @@ commit_data(Db, _) ->
         Db#db{waiting_delayed_commit=nil};
     Header ->
         case lists:member(before_header, FsyncOptions) of
-        true -> ok = couch_file:sync(Filepath);
+        true -> ok = couch_file:sync(Fd);
         _    -> ok
         end,
 
         ok = couch_file:write_header(Fd, Header),
 
         case lists:member(after_header, FsyncOptions) of
-        true -> ok = couch_file:sync(Filepath);
+        true -> ok = couch_file:sync(Fd);
         _    -> ok
         end,
 
