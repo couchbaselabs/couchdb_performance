@@ -75,6 +75,15 @@ couchTests.cluster_view = function(debug) {
     return JSON.parse(xhr.responseText);
   }
 
+  function testKeysSorted(resp) {
+    for (var i = 0; i < (resp.rows.length - 1); i++) {
+      var row = resp.rows[i];
+      var nextRow = resp.rows[i + 1];
+
+      T(row.key < nextRow.key, "keys are sorted");
+    }
+  }
+
 
   /**
    * Tests with map views.
@@ -109,6 +118,25 @@ couchTests.cluster_view = function(debug) {
   TEquals(0, resp.rows.length);
 
 
+  // test 1 empty db and one non-empty db
+  dbA = newDb("test_db_a");
+  dbB = newDb("test_db_b");
+  docs = [makeDocs(1, 11)];
+  dbs = [dbA, dbB];
+
+  addDoc(dbs, ddoc);
+  populateSequenced([dbA], docs);
+
+  resp = clusterQuery(dbs, "test/mapview1");
+
+  TEquals("object", typeof resp);
+  TEquals(10, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(10, resp.rows.length);
+
+  testKeysSorted(resp);
+
+
   // 2 dbs, alternated keys
   dbA = newDb("test_db_a");
   dbB = newDb("test_db_b");
@@ -125,12 +153,7 @@ couchTests.cluster_view = function(debug) {
   TEquals("object", typeof resp.rows);
   TEquals(40, resp.rows.length);
 
-  for (i = 0; i < (resp.rows.length - 1); i++) {
-    var row = resp.rows[i];
-    var nextRow = resp.rows[i + 1];
-
-    T(row.key < nextRow.key, "keys are sorted");
-  }
+  testKeysSorted(resp);
 
 
   // 2 dbs, sequenced keys (worst case)
@@ -149,14 +172,39 @@ couchTests.cluster_view = function(debug) {
   TEquals("object", typeof resp.rows);
   TEquals(40, resp.rows.length);
 
-  for (i = 0; i < (resp.rows.length - 1); i++) {
-    var row = resp.rows[i];
-    var nextRow = resp.rows[i + 1];
+  testKeysSorted(resp);
 
-    T(row.key < nextRow.key, "keys are sorted");
-  }
+
+  // 5 dbs, alternated keys
+  var dbC, dbD, dbE;
+  dbA = newDb("test_db_a");
+  dbB = newDb("test_db_b");
+  dbC = newDb("test_db_c");
+  dbD = newDb("test_db_d");
+  dbE = newDb("test_db_e");
+  docs = makeDocs(1, 51);
+  dbs = [dbA, dbB, dbC, dbD, dbE];
+
+  addDoc(dbs, ddoc);
+  populateAlternated(dbs, docs);
+
+  resp = clusterQuery(dbs, "test/mapview1");
+
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(50, resp.rows.length);
+
+  testKeysSorted(resp);
 
   /**
    * End of tests with map views.
    */
+
+  // cleanup
+  dbA.deleteDb();
+  dbB.deleteDb();
+  dbC.deleteDb();
+  dbD.deleteDb();
+  dbE.deleteDb();
 };
