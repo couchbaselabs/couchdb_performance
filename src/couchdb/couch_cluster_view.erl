@@ -88,7 +88,8 @@ http_sender_collect_row_count(Req, RecvCount, AccCount) ->
             Start = io_lib:format(
                 "{\"total_rows\":~w,\"rows\":[\r\n", [AccCount2]),
             {ok, Resp} = couch_httpd:start_json_response(Req, 200, []),
-            http_sender_send_rows(Resp, Start);
+            couch_httpd:send_chunk(Resp, Start),
+            http_sender_send_rows(Resp, <<"\r\n">>);
         true ->
             http_sender_collect_row_count(Req, RecvCount - 1, AccCount2)
         end

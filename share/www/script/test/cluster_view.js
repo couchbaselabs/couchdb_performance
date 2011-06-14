@@ -93,9 +93,23 @@ couchTests.cluster_view = function(debug) {
     }
   };
 
-  // 2 dbs, alternated keys
+  // test with empty dbs
   var dbA, dbB, dbs, docs, resp, i;
+  dbA = newDb("test_db_a");
+  dbB = newDb("test_db_b");
+  dbs = [dbA, dbB];
 
+  addDoc(dbs, ddoc);
+
+  resp = clusterQuery(dbs, "test/mapview1");
+
+  TEquals("object", typeof resp);
+  TEquals(0, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(0, resp.rows.length);
+
+
+  // 2 dbs, alternated keys
   dbA = newDb("test_db_a");
   dbB = newDb("test_db_b");
   docs = makeDocs(1, 41);
