@@ -286,6 +286,52 @@ couchTests.cluster_view = function(debug) {
 
   testKeysSorted(resp);
 
+  // test limit=N query parameter
+  resp = clusterQuery(dbs, "test/mapview1", {"limit": 1});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(1, resp.rows.length);
+  TEquals(1, resp.rows[0].key);
+  TEquals("1", resp.rows[0].id);
+
+  resp = clusterQuery(dbs, "test/mapview1", {"limit": 10});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(10, resp.rows.length);
+  TEquals(1, resp.rows[0].key);
+  TEquals("1", resp.rows[0].id);
+  TEquals(10, resp.rows[9].key);
+  TEquals("10", resp.rows[9].id);
+
+  testKeysSorted(resp);
+
+  resp = clusterQuery(dbs, "test/mapview1", {"limit": 1000});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(50, resp.rows.length);
+  TEquals(1, resp.rows[0].key);
+  TEquals("1", resp.rows[0].id);
+  TEquals(50, resp.rows[49].key);
+  TEquals("50", resp.rows[49].id);
+
+  testKeysSorted(resp);
+
+  // test skip=N with limit=N query parameters
+  resp = clusterQuery(dbs, "test/mapview1", {"limit": 10, "skip": 10});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(10, resp.rows.length);
+  TEquals(11, resp.rows[0].key);
+  TEquals("11", resp.rows[0].id);
+  TEquals(20, resp.rows[9].key);
+  TEquals("20", resp.rows[9].id);
+
+  testKeysSorted(resp);
+
 
   /**
    * End of tests with map views.

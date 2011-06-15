@@ -33,19 +33,29 @@ query_view(DDocId, ViewName, DbNames, Keys, #httpd{user_ctx = UserCtx} = Req) ->
     % TODO: support reduce views
     map = ViewType = view_type(ViewDef, Req),
     ViewArgs = #view_query_args{
-        skip = Skip
+        skip = Skip,
+        limit = Limit
     } = couch_httpd_view:parse_view_params(Req, Keys, ViewType),
-    Queues = lists:foldr(
-        fun(DbName, Acc) ->
+    {Queues, Folders} = lists:foldr(
+        fun(DbName, {QAcc, PidAcc}) ->
             {ok, Q} = couch_work_queue:new([{max_items, ?MAX_QUEUE_ITEMS}]),
-            _Pid = spawn_link(fun() ->
+            Pid = spawn_link(fun() ->
                 map_view_folder(DbName, UserCtx, DDocId, ViewName, ViewArgs, Q)
             end),
-            [Q | Acc]
+            {[Q | QAcc], [Pid | PidAcc]}
         end,
-        [], DbNames),
+        {[], []}, DbNames),
     Sender = spawn_link(fun() -> http_sender_loop(Req, length(Queues)) end),
-    merge_map_views(Queues, dict:new(), LessFun, Sender, Skip).
+    case merge_map_views(Queues, dict:new(), LessFun, Sender, Skip, Limit) of
+    {ok, Resp} ->
+        Resp;
+    {stop, Resp} ->
+        lists:foreach(
+            fun(P) -> catch unlink(P), catch exit(P, kill) end, Folders),
+        lists:foreach(
+            fun(P) -> catch unlink(P), catch exit(P, kill) end, Queues),
+        Resp
+    end.
 
 
 view_less_fun({ViewDef}) ->
@@ -119,19 +129,27 @@ view_row_obj({{Key, DocId}, Value}) ->
 
 
 % NOTE: this merge logic will be different for reduce views
-merge_map_views([], _QueueMap, _LessFun, Sender, _Skip) ->
+merge_map_views([], _QueueMap, _LessFun, Sender, _Skip, _Limit) ->
     Sender ! {stop, self()},
     receive
     {Sender, Resp} ->
-        Resp
+        {ok, Resp}
     end;
-merge_map_views(Queues, QueueMap, LessFun, Sender, Skip) ->
+
+merge_map_views(_Queues, _QueueMap, _LessFun, Sender, _Skip, 0) ->
+    Sender ! {stop, self()},
+    receive
+    {Sender, Resp} ->
+        {stop, Resp}
+    end;
+
+merge_map_views(Queues, QueueMap, LessFun, Sender, Skip, Limit) ->
     % QueueMap, map the last row taken from each queue to its respective
     % queue. Each row in this dict/map is a row that was not the smallest
     % one in the previous iteration.
     case dequeue(Queues, QueueMap, Sender) of
     {[], _, Queues2} ->
-        merge_map_views(Queues2, QueueMap, LessFun, Sender, Skip);
+        merge_map_views(Queues2, QueueMap, LessFun, Sender, Skip, Limit);
     {TopRows, RowsToQueuesMap, Queues2} ->
         {SmallestRow, RestRows} = take_smallest_row(TopRows, LessFun),
         [QueueSmallest | _] = dict:fetch(SmallestRow, RowsToQueuesMap),
@@ -144,11 +162,13 @@ merge_map_views(Queues, QueueMap, LessFun, Sender, Skip) ->
             RestRows),
         case Skip > 0 of
         true ->
-            ok;
+            Limit2 = Limit;
         false ->
-            Sender ! {row, SmallestRow}
+            Sender ! {row, SmallestRow},
+            Limit2 = dec_counter(Limit)
         end,
-        merge_map_views(Queues2, QueueMap2, LessFun, Sender, dec_counter(Skip))
+        merge_map_views(
+            Queues2, QueueMap2, LessFun, Sender, dec_counter(Skip), Limit2)
     end.
 
 
