@@ -118,17 +118,6 @@ view_row_obj({{Key, DocId}, Value}) ->
     {[{id, DocId}, {key, Key}, {value, Value}]}.
 
 
-debug_sender_loop(Acc) ->
-    receive
-    start ->
-        debug_sender_loop([start | Acc]);
-    {row, Row} ->
-        debug_sender_loop([Row | Acc]);
-    {stop, From} ->
-        From ! {ok, self(), lists:reverse(Acc, ['end'])}
-    end.
-
-
 % NOTE: this merge logic will be different for reduce views
 merge_map_views([], _QueueMap, _LessFun, Sender, _Skip) ->
     Sender ! {stop, self()},
