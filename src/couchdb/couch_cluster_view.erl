@@ -208,10 +208,13 @@ map_view_folder(<<"https://", _/binary>> = _DbName, _UserCtx,
                 _DDocId, _ViewName, _ViewArgs, _Queue) ->
     % TODO
     throw(?NYI);
-map_view_folder(DbName, UserCtx, DDocId, ViewName, _ViewArgs, Queue) ->
+map_view_folder(DbName, UserCtx, DDocId, ViewName, ViewArgs, Queue) ->
+    #view_query_args{
+        stale = Stale
+    } = ViewArgs,
     {ok, Db} = couch_db:open(DbName, [{user_ctx, UserCtx}]),
     try
-        {ok, View, _Group} = couch_view:get_map_view(Db, DDocId, ViewName, nil),
+        {ok, View, _} = couch_view:get_map_view(Db, DDocId, ViewName, Stale),
         {ok, RowCount} = couch_view:get_row_count(View),
         couch_work_queue:queue(Queue, {row_count, RowCount}),
         FoldlFun = fun(Row, _, Acc) ->

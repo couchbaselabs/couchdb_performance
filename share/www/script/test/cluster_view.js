@@ -54,14 +54,27 @@ couchTests.cluster_view = function(debug) {
     }
   }
 
-  function clusterQuery(dbs, viewname) {
+  function clusterQuery(dbs, viewname, options) {
     var dbNames = [];
+    options = options || {};
 
     for (var i = 0; i < dbs.length; i++) {
       dbNames.push(dbs[i].name);
     }
 
-    var xhr = CouchDB.request("POST", "/_cluster_view", {
+    var qs = "";
+    for (var q in options) {
+      if (qs !== "") {
+        qs = qs + "&";
+      }
+      qs = qs + String(q) + "=" + String(options[q]);
+    }
+
+    if (qs !== "") {
+      qs = "?" + qs;
+    }
+
+    var xhr = CouchDB.request("POST", "/_cluster_view" + qs, {
       headers: {
         "Content-Type": "application/json"
       },
@@ -82,6 +95,14 @@ couchTests.cluster_view = function(debug) {
 
       T(row.key < nextRow.key, "keys are sorted");
     }
+  }
+
+  function wait(ms) {
+    var t0 = new Date(), t1;
+    do {
+      CouchDB.request("GET", "/");
+      t1 = new Date();
+    } while ((t1 - t0) <= ms);
   }
 
 
@@ -152,6 +173,41 @@ couchTests.cluster_view = function(debug) {
   TEquals(40, resp.total_rows);
   TEquals("object", typeof resp.rows);
   TEquals(40, resp.rows.length);
+
+  testKeysSorted(resp);
+
+  // now test stale=ok works
+  populateAlternated(dbs, makeDocs(41, 43));
+
+  resp = clusterQuery(dbs, "test/mapview1", {stale: "ok"});
+
+  TEquals("object", typeof resp);
+  TEquals(40, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(40, resp.rows.length);
+
+  // test stale=update_after works
+
+  resp = clusterQuery(dbs, "test/mapview1", {stale: "update_after"});
+
+  TEquals("object", typeof resp);
+  TEquals(40, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(40, resp.rows.length);
+
+  // wait a bit, the view should now reflect the 2 new documents
+  wait(1000);
+
+  resp = clusterQuery(dbs, "test/mapview1", {stale: "ok"});
+
+  TEquals("object", typeof resp);
+  TEquals(42, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(42, resp.rows.length);
+  TEquals(41, resp.rows[40].key);
+  TEquals("41", resp.rows[40].id);
+  TEquals(42, resp.rows[41].key);
+  TEquals("42", resp.rows[41].id);
 
   testKeysSorted(resp);
 
