@@ -32,7 +32,9 @@ query_view(DDocId, ViewName, DbNames, Keys, #httpd{user_ctx = UserCtx} = Req) ->
     LessFun = view_less_fun(ViewDef),
     % TODO: support reduce views
     map = ViewType = view_type(ViewDef, Req),
-    ViewArgs = couch_httpd_view:parse_view_params(Req, Keys, ViewType),
+    ViewArgs = #view_query_args{
+        skip = Skip
+    } = couch_httpd_view:parse_view_params(Req, Keys, ViewType),
     Queues = lists:foldr(
         fun(DbName, Acc) ->
             {ok, Q} = couch_work_queue:new([{max_items, ?MAX_QUEUE_ITEMS}]),
@@ -43,7 +45,7 @@ query_view(DDocId, ViewName, DbNames, Keys, #httpd{user_ctx = UserCtx} = Req) ->
         end,
         [], DbNames),
     Sender = spawn_link(fun() -> http_sender_loop(Req, length(Queues)) end),
-    merge_map_views(Queues, dict:new(), LessFun, Sender).
+    merge_map_views(Queues, dict:new(), LessFun, Sender, Skip).
 
 
 view_less_fun({ViewDef}) ->
@@ -128,19 +130,19 @@ debug_sender_loop(Acc) ->
 
 
 % NOTE: this merge logic will be different for reduce views
-merge_map_views([], _QueueMap, _LessFun, Sender) ->
+merge_map_views([], _QueueMap, _LessFun, Sender, _Skip) ->
     Sender ! {stop, self()},
     receive
     {Sender, Resp} ->
         Resp
     end;
-merge_map_views(Queues, QueueMap, LessFun, Sender) ->
+merge_map_views(Queues, QueueMap, LessFun, Sender, Skip) ->
     % QueueMap, map the last row taken from each queue to its respective
     % queue. Each row in this dict/map is a row that was not the smallest
     % one in the previous iteration.
     case dequeue(Queues, QueueMap, Sender) of
     {[], _, Queues2} ->
-        merge_map_views(Queues2, QueueMap, LessFun, Sender);
+        merge_map_views(Queues2, QueueMap, LessFun, Sender, Skip);
     {TopRows, RowsToQueuesMap, Queues2} ->
         {SmallestRow, RestRows} = take_smallest_row(TopRows, LessFun),
         [QueueSmallest | _] = dict:fetch(SmallestRow, RowsToQueuesMap),
@@ -151,9 +153,18 @@ merge_map_views(Queues, QueueMap, LessFun, Sender) ->
             end,
             dict:erase(QueueSmallest, QueueMap),
             RestRows),
-        Sender ! {row, SmallestRow},
-        merge_map_views(Queues2, QueueMap2, LessFun, Sender)
+        case Skip > 0 of
+        true ->
+            ok;
+        false ->
+            Sender ! {row, SmallestRow}
+        end,
+        merge_map_views(Queues2, QueueMap2, LessFun, Sender, dec_counter(Skip))
     end.
+
+
+dec_counter(0) -> 0;
+dec_counter(N) -> N - 1.
 
 
 dequeue(Queues, QueueMap, Sender) ->

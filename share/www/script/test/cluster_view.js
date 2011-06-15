@@ -253,6 +253,40 @@ couchTests.cluster_view = function(debug) {
 
   testKeysSorted(resp);
 
+  // test skip=N query parameter
+  resp = clusterQuery(dbs, "test/mapview1", {"skip": 2});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(48, resp.rows.length);
+  TEquals(3, resp.rows[0].key);
+  TEquals("3", resp.rows[0].id);
+  TEquals(4, resp.rows[1].key);
+  TEquals("4", resp.rows[1].id);
+
+  testKeysSorted(resp);
+
+  resp = clusterQuery(dbs, "test/mapview1", {"skip": 49});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(1, resp.rows.length);
+  TEquals(50, resp.rows[0].key);
+  TEquals("50", resp.rows[0].id);
+
+  testKeysSorted(resp);
+
+  resp = clusterQuery(dbs, "test/mapview1", {"skip": 0});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(50, resp.rows.length);
+  TEquals(1, resp.rows[0].key);
+  TEquals("1", resp.rows[0].id);
+
+  testKeysSorted(resp);
+
+
   /**
    * End of tests with map views.
    */
