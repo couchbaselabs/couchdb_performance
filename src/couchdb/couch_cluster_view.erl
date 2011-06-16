@@ -29,13 +29,14 @@
 
 query_view(DDocId, ViewName, DbNames, Keys, #httpd{user_ctx = UserCtx} = Req) ->
     ViewDef = check_view_exists(DbNames, UserCtx, DDocId, ViewName, nil),
-    LessFun = view_less_fun(ViewDef),
     % TODO: support reduce views
     map = ViewType = view_type(ViewDef, Req),
     ViewArgs = #view_query_args{
         skip = Skip,
-        limit = Limit
+        limit = Limit,
+        direction = Dir
     } = couch_httpd_view:parse_view_params(Req, Keys, ViewType),
+    LessFun = view_less_fun(ViewDef, Dir),
     {Queues, Folders} = lists:foldr(
         fun(DbName, {QAcc, PidAcc}) ->
             {ok, Q} = couch_work_queue:new([{max_items, ?MAX_QUEUE_ITEMS}]),
@@ -58,15 +59,21 @@ query_view(DDocId, ViewName, DbNames, Keys, #httpd{user_ctx = UserCtx} = Req) ->
     end.
 
 
-view_less_fun({ViewDef}) ->
+view_less_fun({ViewDef}, Dir) ->
     {ViewOptions} = get_value(<<"options">>, ViewDef, {[]}),
-    case get_value(<<"collation">>, ViewOptions, <<"default">>) of
+    LessFun = case get_value(<<"collation">>, ViewOptions, <<"default">>) of
     <<"default">> ->
         fun(RowA, RowB) ->
             couch_view:less_json_ids(element(1, RowA), element(1, RowB))
         end;
     <<"raw">> ->
         fun(A, B) -> A < B end
+    end,
+    case Dir of
+    fwd ->
+        LessFun;
+    rev ->
+        fun(A, B) -> not LessFun(A, B) end
     end.
 
 
@@ -242,8 +249,8 @@ map_view_folder(DbName, UserCtx, DDocId, ViewName, ViewArgs, Queue) ->
             couch_work_queue:queue(Queue, Row),
             {ok, Acc}
         end,
-        % TODO: set dir, start key and end key to those in #view_query_args{} = ViewArgs
-        {ok, _, _} = couch_view:fold(View, FoldlFun, [], [{dir, fwd}]),
+        FoldOpts = couch_httpd_view:make_key_options(ViewArgs),
+        {ok, _, _} = couch_view:fold(View, FoldlFun, [], FoldOpts),
         couch_work_queue:close(Queue)
     after
         couch_db:close(Db)

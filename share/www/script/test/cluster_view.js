@@ -88,12 +88,17 @@ couchTests.cluster_view = function(debug) {
     return JSON.parse(xhr.responseText);
   }
 
-  function testKeysSorted(resp) {
+  function testKeysSorted(resp, direction) {
+    direction = direction || "fwd";
     for (var i = 0; i < (resp.rows.length - 1); i++) {
       var row = resp.rows[i];
       var nextRow = resp.rows[i + 1];
 
-      T(row.key < nextRow.key, "keys are sorted");
+      if (direction === "rev") {
+        T(row.key >= nextRow.key, "keys are sorted in reverse order");
+      } else {
+        T(row.key <= nextRow.key, "keys are sorted");
+      }
     }
   }
 
@@ -331,6 +336,192 @@ couchTests.cluster_view = function(debug) {
   TEquals("20", resp.rows[9].id);
 
   testKeysSorted(resp);
+
+  // test starkey query parameter
+  resp = clusterQuery(dbs, "test/mapview1", {"startkey": 10});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(41, resp.rows.length);
+  TEquals(10, resp.rows[0].key);
+  TEquals("10", resp.rows[0].id);
+  TEquals(50, resp.rows[40].key);
+  TEquals("50", resp.rows[40].id);
+
+  testKeysSorted(resp);
+
+  // test starkey query parameter with startkey_docid (same result as before)
+  resp = clusterQuery(dbs, "test/mapview1",
+      {"startkey": 10, "startkey_docid": "10"});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(41, resp.rows.length);
+  TEquals(10, resp.rows[0].key);
+  TEquals("10", resp.rows[0].id);
+  TEquals(50, resp.rows[40].key);
+  TEquals("50", resp.rows[40].id);
+
+  testKeysSorted(resp);
+
+  // test starkey query parameter with startkey_docid (not same result as before)
+  resp = clusterQuery(dbs, "test/mapview1",
+      {"startkey": 10, "startkey_docid": "11"});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(40, resp.rows.length);
+  TEquals(11, resp.rows[0].key);
+  TEquals("11", resp.rows[0].id);
+  TEquals(50, resp.rows[39].key);
+  TEquals("50", resp.rows[39].id);
+
+  testKeysSorted(resp);
+
+  // test starkey query parameter with limit
+  resp = clusterQuery(dbs, "test/mapview1", {"startkey": 10, "limit": 5});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(5, resp.rows.length);
+  TEquals(10, resp.rows[0].key);
+  TEquals("10", resp.rows[0].id);
+  TEquals(14, resp.rows[4].key);
+  TEquals("14", resp.rows[4].id);
+
+  testKeysSorted(resp);
+
+  // test starkey query parameter with limit and skip
+  resp = clusterQuery(dbs, "test/mapview1", {"startkey": 10, "limit": 5, "skip": 2});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(5, resp.rows.length);
+  TEquals(12, resp.rows[0].key);
+  TEquals("12", resp.rows[0].id);
+  TEquals(16, resp.rows[4].key);
+  TEquals("16", resp.rows[4].id);
+
+  testKeysSorted(resp);
+
+  // test endkey query parameter
+  resp = clusterQuery(dbs, "test/mapview1", {"endkey": 10});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(10, resp.rows.length);
+  TEquals(1, resp.rows[0].key);
+  TEquals("1", resp.rows[0].id);
+  TEquals(10, resp.rows[9].key);
+  TEquals("10", resp.rows[9].id);
+
+  testKeysSorted(resp);
+
+  // test endkey query parameter with endkey_docid (same result as before)
+  resp = clusterQuery(dbs, "test/mapview1", {"endkey": 10, "endkey_docid": "10"});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(10, resp.rows.length);
+  TEquals(1, resp.rows[0].key);
+  TEquals("1", resp.rows[0].id);
+  TEquals(10, resp.rows[9].key);
+  TEquals("10", resp.rows[9].id);
+
+  testKeysSorted(resp);
+
+  // test endkey query parameter with endkey_docid (not same result as before)
+  resp = clusterQuery(dbs, "test/mapview1", {"endkey": 10, "endkey_docid": "0"});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(9, resp.rows.length);
+  TEquals(1, resp.rows[0].key);
+  TEquals("1", resp.rows[0].id);
+  TEquals(9, resp.rows[8].key);
+  TEquals("9", resp.rows[8].id);
+
+  testKeysSorted(resp);
+
+  // test endkey query parameter with inclusive_end=false
+  resp = clusterQuery(dbs, "test/mapview1",
+    {"endkey": 10, "inclusive_end": "false"});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(9, resp.rows.length);
+  TEquals(1, resp.rows[0].key);
+  TEquals("1", resp.rows[0].id);
+  TEquals(9, resp.rows[8].key);
+  TEquals("9", resp.rows[8].id);
+
+  // test endkey query parameter with limit
+  resp = clusterQuery(dbs, "test/mapview1", {"endkey": 10, "limit": 3});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(3, resp.rows.length);
+  TEquals(1, resp.rows[0].key);
+  TEquals("1", resp.rows[0].id);
+  TEquals(3, resp.rows[2].key);
+  TEquals("3", resp.rows[2].id);
+
+  testKeysSorted(resp);
+
+  // test starkey with endkey query parameter
+  resp = clusterQuery(dbs, "test/mapview1", {"startkey": 10, "endkey": 20});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(11, resp.rows.length);
+  TEquals(10, resp.rows[0].key);
+  TEquals("10", resp.rows[0].id);
+  TEquals(20, resp.rows[10].key);
+  TEquals("20", resp.rows[10].id);
+
+  testKeysSorted(resp);
+
+  // test starkey query parameter with descending order
+  resp = clusterQuery(dbs, "test/mapview1", {"startkey": 10, "descending": true});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(10, resp.rows.length);
+  TEquals(10, resp.rows[0].key);
+  TEquals("10", resp.rows[0].id);
+  TEquals(1, resp.rows[9].key);
+  TEquals("1", resp.rows[9].id);
+
+  testKeysSorted(resp, "rev");
+
+  // test starkey query parameter with endkey and descending order
+  resp = clusterQuery(dbs, "test/mapview1",
+    {"startkey": 10, "endkey": 5, "descending": true});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(6, resp.rows.length);
+  TEquals(10, resp.rows[0].key);
+  TEquals("10", resp.rows[0].id);
+  TEquals(5, resp.rows[5].key);
+  TEquals("5", resp.rows[5].id);
+
+  testKeysSorted(resp, "rev");
+
+  // test key query parameter
+  resp = clusterQuery(dbs, "test/mapview1", {"key": 10});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(1, resp.rows.length);
+  TEquals(10, resp.rows[0].key);
+  TEquals("10", resp.rows[0].id);
+
+  resp = clusterQuery(dbs, "test/mapview1", {"key": 1000});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(0, resp.rows.length);
 
 
   /**
