@@ -41,7 +41,7 @@ query_view(DDocId, ViewName, DbNames, Keys, #httpd{user_ctx = UserCtx} = Req) ->
         fun(DbName, {QAcc, PidAcc}) ->
             {ok, Q} = couch_work_queue:new([{max_items, ?MAX_QUEUE_ITEMS}]),
             Pid = spawn_link(fun() ->
-                map_view_folder(DbName, UserCtx, DDocId, ViewName, ViewArgs, Q)
+                map_view_folder(DbName, UserCtx, DDocId, ViewName, Keys, ViewArgs, Q)
             end),
             {[Q | QAcc], [Pid | PidAcc]}
         end,
@@ -228,14 +228,14 @@ take_smallest_row([Row | Rest], Smallest, LessFun, Acc) ->
 
 
 map_view_folder(<<"http://", _/binary>> = _DbName, _UserCtx,
-                _DDocId, _ViewName, _ViewArgs, _Queue) ->
+                _DDocId, _ViewName, _Keys, _ViewArgs, _Queue) ->
     % TODO
     throw(?NYI);
 map_view_folder(<<"https://", _/binary>> = _DbName, _UserCtx,
-                _DDocId, _ViewName, _ViewArgs, _Queue) ->
+                _DDocId, _ViewName, _Keys, _ViewArgs, _Queue) ->
     % TODO
     throw(?NYI);
-map_view_folder(DbName, UserCtx, DDocId, ViewName, ViewArgs, Queue) ->
+map_view_folder(DbName, UserCtx, DDocId, ViewName, Keys, ViewArgs, Queue) ->
     #view_query_args{
         stale = Stale
     } = ViewArgs,
@@ -249,8 +249,19 @@ map_view_folder(DbName, UserCtx, DDocId, ViewName, ViewArgs, Queue) ->
             couch_work_queue:queue(Queue, Row),
             {ok, Acc}
         end,
-        FoldOpts = couch_httpd_view:make_key_options(ViewArgs),
-        {ok, _, _} = couch_view:fold(View, FoldlFun, [], FoldOpts),
+        case Keys of
+        nil ->
+            FoldOpts = couch_httpd_view:make_key_options(ViewArgs),
+            {ok, _, _} = couch_view:fold(View, FoldlFun, [], FoldOpts);
+        _ when is_list(Keys) ->
+            lists:foreach(
+                fun(K) ->
+                    FoldOpts = couch_httpd_view:make_key_options(
+                        ViewArgs#view_query_args{start_key = K, end_key = K}),
+                    {ok, _, _} = couch_view:fold(View, FoldlFun, [], FoldOpts)
+                end,
+                Keys)
+        end,
         couch_work_queue:close(Queue)
     after
         couch_db:close(Db)

@@ -62,8 +62,17 @@ couchTests.cluster_view = function(debug) {
       dbNames.push(dbs[i].name);
     }
 
+    var body = {
+      "databases": dbNames,
+      "viewname": viewname
+    };
     var qs = "";
+
     for (var q in options) {
+      if (q === "keys") {
+        body["keys"] = options[q];
+        continue;
+      }
       if (qs !== "") {
         qs = qs + "&";
       }
@@ -78,10 +87,7 @@ couchTests.cluster_view = function(debug) {
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        "databases": dbNames,
-        "viewname": viewname
-      })
+      body: JSON.stringify(body)
     });
     TEquals(200, xhr.status);
 
@@ -522,6 +528,22 @@ couchTests.cluster_view = function(debug) {
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
   TEquals(0, resp.rows.length);
+
+  // test keys=[key1, key2, key3...] query parameter
+  var keys = [5, 3, 10, 39, 666, 21];
+  resp = clusterQuery(dbs, "test/mapview1", {"keys": keys});
+  keys.sort(function(a, b) { return a - b; });
+
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(keys.length - 1, resp.rows.length);
+
+  for (i = 0; i < resp.rows.length; i++) {
+    TEquals(keys[i], resp.rows[i].key);
+  }
+
+  testKeysSorted(resp);
 
 
   /**
