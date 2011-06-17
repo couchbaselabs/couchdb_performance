@@ -132,7 +132,10 @@ view_row_obj({{Key, error}, Value}) ->
     {[{key, Key}, {error, Value}]};
 
 view_row_obj({{Key, DocId}, Value}) ->
-    {[{id, DocId}, {key, Key}, {value, Value}]}.
+    {[{id, DocId}, {key, Key}, {value, Value}]};
+
+view_row_obj({{Key, DocId}, Value, Doc}) ->
+    {[{id, DocId}, {key, Key}, {value, Value}, Doc]}.
 
 
 % NOTE: this merge logic will be different for reduce views
@@ -237,18 +240,16 @@ map_view_folder(<<"https://", _/binary>> = _DbName, _UserCtx,
     throw(?NYI);
 map_view_folder(DbName, UserCtx, DDocId, ViewName, Keys, ViewArgs, Queue) ->
     #view_query_args{
-        stale = Stale
+        stale = Stale,
+        include_docs = IncludeDocs,
+        conflicts = Conflicts
     } = ViewArgs,
     {ok, Db} = couch_db:open(DbName, [{user_ctx, UserCtx}]),
     try
+        FoldlFun = make_map_fold_fun(IncludeDocs, Conflicts, Db, Queue),
         {ok, View, _} = couch_view:get_map_view(Db, DDocId, ViewName, Stale),
         {ok, RowCount} = couch_view:get_row_count(View),
         couch_work_queue:queue(Queue, {row_count, RowCount}),
-        FoldlFun = fun(Row, _, Acc) ->
-            % TODO: logic for include_docs=true and conflicts=true
-            couch_work_queue:queue(Queue, Row),
-            {ok, Acc}
-        end,
         case Keys of
         nil ->
             FoldOpts = couch_httpd_view:make_key_options(ViewArgs),
@@ -265,6 +266,35 @@ map_view_folder(DbName, UserCtx, DDocId, ViewName, Keys, ViewArgs, Queue) ->
         couch_work_queue:close(Queue)
     after
         couch_db:close(Db)
+    end.
+
+
+make_map_fold_fun(false, _Conflicts, _Db, Queue) ->
+    fun(Row, _, Acc) ->
+        couch_work_queue:queue(Queue, Row),
+        {ok, Acc}
+    end;
+
+make_map_fold_fun(true, Conflicts, Db, Queue) ->
+    DocOpenOpts = if Conflicts -> [conflicts]; true -> [] end,
+    fun({{_Key, error}, _Value} = Row, _, Acc) ->
+        couch_work_queue:queue(Queue, Row),
+        {ok, Acc};
+    ({{_Key, DocId} = Kd, {Props} = Value}, _, Acc) ->
+        Rev = case get_value(<<"_rev">>, Props, nil) of
+        nil ->
+            nil;
+        Rev0 ->
+            couch_doc:parse_rev(Rev0)
+        end,
+        IncludeId = get_value(<<"_id">>, Props, DocId),
+        [Doc] = couch_httpd_view:doc_member(Db, {IncludeId, Rev}, DocOpenOpts),
+        couch_work_queue:queue(Queue, {Kd, Value, Doc}),
+        {ok, Acc};
+    ({{_Key, DocId} = Kd, Value}, _, Acc) ->
+        [Doc] = couch_httpd_view:doc_member(Db, {DocId, nil}, DocOpenOpts),
+        couch_work_queue:queue(Queue, {Kd, Value, Doc}),
+        {ok, Acc}
     end.
 
 

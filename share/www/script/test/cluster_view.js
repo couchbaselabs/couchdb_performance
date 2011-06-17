@@ -545,6 +545,22 @@ couchTests.cluster_view = function(debug) {
 
   testKeysSorted(resp);
 
+  // test include_docs query parameter
+  resp = clusterQuery(dbs, "test/mapview1", {"include_docs": "true"});
+  TEquals("object", typeof resp);
+  TEquals(50, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(50, resp.rows.length);
+
+  testKeysSorted(resp);
+  for (i = 0; i < resp.rows.length; i++) {
+    var doc = resp.rows[i].doc;
+    T((doc !== null) && (typeof doc === 'object'), "row has doc");
+    TEquals(i + 1, doc.integer);
+    TEquals(String(i + 1), doc.string);
+    TEquals(resp.rows[i].id, doc._id);
+  }
+
 
   /**
    * End of tests with map views.
