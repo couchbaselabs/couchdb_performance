@@ -130,6 +130,17 @@ couchTests.cluster_view = function(debug) {
           (function(doc) {
              emit(doc.integer, doc.string);
           }).toString()
+      },
+      redview1: {
+        map:
+          (function(doc) {
+             emit(doc.integer, doc.integer);
+             emit(doc.integer + 1, doc.integer);
+          }).toString(),
+        reduce:
+          (function(keys, values, rereduce) {
+             return sum(values);
+          }).toString()
       }
     }
   };
@@ -561,9 +572,34 @@ couchTests.cluster_view = function(debug) {
     TEquals(resp.rows[i].id, doc._id);
   }
 
-
   /**
    * End of tests with map views.
+   */
+
+
+  /**
+   * Tests with reduce views
+   */
+
+  // query reduce view with ?reduce=false
+  dbA = newDb("test_db_a");
+  dbB = newDb("test_db_b");
+  docs = makeDocs(1, 21);
+  dbs = [dbA, dbB];
+
+  addDoc(dbs, ddoc);
+  populateAlternated(dbs, docs);
+
+  resp = clusterQuery(dbs, "test/redview1", {"reduce": "false"});
+  TEquals("object", typeof resp);
+  TEquals(40, resp.total_rows);
+  TEquals("object", typeof resp.rows);
+  TEquals(40, resp.rows.length);
+
+  testKeysSorted(resp);
+
+  /**
+   * End of tests with reduce views.
    */
 
   // cleanup

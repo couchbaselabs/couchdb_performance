@@ -87,7 +87,7 @@ view_type({ViewDef}, Req) ->
         "true" ->
             reduce;
         "false" ->
-            red_map
+            map
         end
     end.
 
@@ -247,7 +247,7 @@ map_view_folder(DbName, UserCtx, DDocId, ViewName, Keys, ViewArgs, Queue) ->
     {ok, Db} = couch_db:open(DbName, [{user_ctx, UserCtx}]),
     try
         FoldlFun = make_map_fold_fun(IncludeDocs, Conflicts, Db, Queue),
-        {ok, View, _} = couch_view:get_map_view(Db, DDocId, ViewName, Stale),
+        View = get_map_view(Db, DDocId, ViewName, Stale),
         {ok, RowCount} = couch_view:get_row_count(View),
         couch_work_queue:queue(Queue, {row_count, RowCount}),
         case Keys of
@@ -266,6 +266,16 @@ map_view_folder(DbName, UserCtx, DDocId, ViewName, Keys, ViewArgs, Queue) ->
         couch_work_queue:close(Queue)
     after
         couch_db:close(Db)
+    end.
+
+
+get_map_view(Db, DDocId, ViewName, Stale) ->
+    case couch_view:get_map_view(Db, DDocId, ViewName, Stale) of
+    {ok, MapView, _} ->
+        MapView;
+    {not_found, _} ->
+        {ok, View, _} = couch_view:get_reduce_view(Db, DDocId, ViewName, Stale),
+        couch_view:extract_map_view(View)
     end.
 
 
