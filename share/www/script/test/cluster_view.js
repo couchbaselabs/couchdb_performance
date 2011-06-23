@@ -116,6 +116,19 @@ couchTests.cluster_view = function(debug) {
     } while ((t1 - t0) <= ms);
   }
 
+  function compareViewResults(resultA, resultB) {
+    TEquals(resultA.rows.length, resultB.rows.length, "same # of rows");
+
+    for (var i = 0; i < resultA.rows.length; i++) {
+      var a = resultA.rows[i];
+      var b = resultA.rows[i];
+
+      TEquals(JSON.stringify(a.key), JSON.stringify(b.key), "keys are equal");
+      TEquals(JSON.stringify(a.value), JSON.stringify(b.value),
+        "values are equal");
+    }
+  }
+
 
   /**
    * Tests with map views.
@@ -134,8 +147,8 @@ couchTests.cluster_view = function(debug) {
       redview1: {
         map:
           (function(doc) {
-             emit(doc.integer, doc.integer);
-             emit(doc.integer + 1, doc.integer);
+             emit([doc.integer, doc.string], doc.integer);
+             emit([doc.integer + 1, doc.string], doc.integer + 1);
           }).toString(),
         reduce:
           (function(keys, values, rereduce) {
@@ -581,22 +594,77 @@ couchTests.cluster_view = function(debug) {
    * Tests with reduce views
    */
 
-  // query reduce view with ?reduce=false
+  // compare query results with the results from a single full view
+  var dbFull = newDb("test_db_full");
+  docs = makeDocs(1, 91);
+  populateAlternated([dbFull], docs);
+  addDoc([dbFull], ddoc);
+
   dbA = newDb("test_db_a");
   dbB = newDb("test_db_b");
-  docs = makeDocs(1, 21);
-  dbs = [dbA, dbB];
+  dbC = newDb("test_db_c");
+  dbs = [dbA, dbB, dbC];
 
   addDoc(dbs, ddoc);
   populateAlternated(dbs, docs);
 
-  resp = clusterQuery(dbs, "test/redview1", {"reduce": "false"});
-  TEquals("object", typeof resp);
-  TEquals(40, resp.total_rows);
-  TEquals("object", typeof resp.rows);
-  TEquals(40, resp.rows.length);
+  var respFull, respMerged;
 
-  testKeysSorted(resp);
+  respFull = dbFull.view("test/redview1", {"reduce": false});
+  respMerged = clusterQuery(dbs, "test/redview1", {"reduce": false});
+
+  compareViewResults(respFull, respMerged);
+
+  respFull = dbFull.view("test/redview1", {"group": false});
+  respMerged = clusterQuery(dbs, "test/redview1", {"group": false});
+
+  compareViewResults(respFull, respMerged);
+
+  respFull = dbFull.view("test/redview1", {"group_level": 1});
+  respMerged = clusterQuery(dbs, "test/redview1", {"group_level": 1});
+
+  compareViewResults(respFull, respMerged);
+
+  respFull = dbFull.view("test/redview1", {"group": true});
+  respMerged = clusterQuery(dbs, "test/redview1", {"group": true});
+
+  compareViewResults(respFull, respMerged);
+
+  var startkey = [9, "8"];
+  var startkeyJson = JSON.stringify(startkey);
+
+  respFull = dbFull.view("test/redview1",
+    {"group": true, "startkey": startkey});
+  respMerged = clusterQuery(dbs, "test/redview1",
+    {"group": true, "startkey": startkeyJson});
+
+  TEquals(startkeyJson, JSON.stringify(respFull.rows[0].key),
+    "correct startkey with ?group=true");
+  TEquals(startkeyJson, JSON.stringify(respMerged.rows[0].key),
+    "correct startkey with ?group=true");
+  compareViewResults(respFull, respMerged);
+
+  var endkey = [26, "25"];
+  var endkeyJson = JSON.stringify(endkey);
+
+  respFull = dbFull.view("test/redview1",
+    {"group": true, "startkey": startkey, "endkey": endkey});
+  respMerged = clusterQuery(dbs, "test/redview1",
+    {"group": true, "startkey": startkeyJson, "endkey": endkeyJson});
+
+  TEquals(startkeyJson, JSON.stringify(respFull.rows[0].key),
+    "correct startkey with ?group=true");
+  TEquals(startkeyJson, JSON.stringify(respMerged.rows[0].key),
+    "correct startkey with ?group=true");
+
+  i = respFull.rows.length - 1;
+  TEquals(endkeyJson, JSON.stringify(respFull.rows[i].key),
+    "correct endkey with ?group=true");
+  i = respMerged.rows.length - 1;
+  TEquals(endkeyJson, JSON.stringify(respMerged.rows[i].key),
+    "correct endkey with ?group=true");
+
+  compareViewResults(respFull, respMerged);
 
   /**
    * End of tests with reduce views.

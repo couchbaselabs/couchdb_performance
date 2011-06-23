@@ -26,28 +26,52 @@
     get_nested_json_value/2
 ]).
 
+-record(merge_params, {
+    queues,
+    queue_map = dict:new(),
+    view_def,
+    view_lang,
+    less_fun,
+    sender,
+    skip,
+    limit
+}).
+
 
 query_view(DDocId, ViewName, DbNames, Keys, #httpd{user_ctx = UserCtx} = Req) ->
-    ViewDef = check_view_exists(DbNames, UserCtx, DDocId, ViewName, nil),
-    % TODO: support reduce views
-    map = ViewType = view_type(ViewDef, Req),
-    ViewArgs = #view_query_args{
-        skip = Skip,
-        limit = Limit,
-        direction = Dir
-    } = couch_httpd_view:parse_view_params(Req, Keys, ViewType),
-    LessFun = view_less_fun(ViewDef, Dir),
+    {Props} = DDoc = check_view_exists(DbNames, UserCtx, DDocId, ViewName, nil),
+    ViewDef = get_nested_json_value(DDoc, [<<"views">>, ViewName]),
+    ViewLang = get_value(<<"language">>, Props, <<"javascript">>),
+    ViewType = view_type(ViewDef, Req),
+    ViewArgs = couch_httpd_view:parse_view_params(Req, Keys, ViewType),
+    LessFun = view_less_fun(ViewDef, ViewArgs#view_query_args.direction, ViewType),
+    {FoldFun, MergeFun} = case ViewType of
+    map ->
+        {fun map_view_folder/7, fun merge_map_views/1};
+    reduce ->
+        {fun red_view_folder/7, fun merge_red_views/1}
+    end,
     {Queues, Folders} = lists:foldr(
         fun(DbName, {QAcc, PidAcc}) ->
             {ok, Q} = couch_work_queue:new([{max_items, ?MAX_QUEUE_ITEMS}]),
             Pid = spawn_link(fun() ->
-                map_view_folder(DbName, UserCtx, DDocId, ViewName, Keys, ViewArgs, Q)
+                FoldFun(DbName, UserCtx, DDocId, ViewName, Keys, ViewArgs, Q)
             end),
             {[Q | QAcc], [Pid | PidAcc]}
         end,
         {[], []}, DbNames),
-    Sender = spawn_link(fun() -> http_sender_loop(Req, length(Queues)) end),
-    case merge_map_views(Queues, dict:new(), LessFun, Sender, Skip, Limit) of
+    Sender = spawn_link(
+        fun() -> http_sender_loop(Req, ViewType, length(Queues)) end),
+    MergeParams = #merge_params{
+        queues = Queues,
+        view_def = ViewDef,
+        view_lang = ViewLang,
+        less_fun = LessFun,
+        sender = Sender,
+        skip = ViewArgs#view_query_args.skip,
+        limit = ViewArgs#view_query_args.limit
+    },
+    case MergeFun(MergeParams) of
     {ok, Resp} ->
         Resp;
     {stop, Resp} ->
@@ -59,12 +83,17 @@ query_view(DDocId, ViewName, DbNames, Keys, #httpd{user_ctx = UserCtx} = Req) ->
     end.
 
 
-view_less_fun({ViewDef}, Dir) ->
+view_less_fun({ViewDef}, Dir, ViewType) ->
     {ViewOptions} = get_value(<<"options">>, ViewDef, {[]}),
     LessFun = case get_value(<<"collation">>, ViewOptions, <<"default">>) of
     <<"default">> ->
-        fun(RowA, RowB) ->
-            couch_view:less_json_ids(element(1, RowA), element(1, RowB))
+        case ViewType of
+        map ->
+            fun(RowA, RowB) ->
+                couch_view:less_json_ids(element(1, RowA), element(1, RowB))
+            end;
+        reduce ->
+            fun({KeyA, _}, {KeyB, _}) -> couch_view:less_json(KeyA, KeyB) end
         end;
     <<"raw">> ->
         fun(A, B) -> A < B end
@@ -92,10 +121,16 @@ view_type({ViewDef}, Req) ->
     end.
 
 
-http_sender_loop(Req, NumFolders) ->
-    http_sender_collect_row_count(Req, NumFolders, 0).
+http_sender_loop(Req, map, NumFolders) ->
+    http_sender_collect_row_count(Req, map, NumFolders, 0);
 
-http_sender_collect_row_count(Req, RecvCount, AccCount) ->
+http_sender_loop(Req, reduce, _NumFolders) ->
+    {ok, Resp} = couch_httpd:start_json_response(Req, 200, []),
+    couch_httpd:send_chunk(Resp, <<"{\"rows\":[">>),
+    http_sender_send_rows(Resp, reduce, <<"\r\n">>).
+
+
+http_sender_collect_row_count(Req, ViewType, RecvCount, AccCount) ->
     receive
     {row_count, Count} ->
         AccCount2 = AccCount + Count,
@@ -105,22 +140,22 @@ http_sender_collect_row_count(Req, RecvCount, AccCount) ->
             % TODO: maybe add etag like for regular views? How to
             %       compute them?
             Start = io_lib:format(
-                "{\"total_rows\":~w,\"rows\":[\r\n", [AccCount2]),
+                "{\"total_rows\":~w,\"rows\":[", [AccCount2]),
             {ok, Resp} = couch_httpd:start_json_response(Req, 200, []),
             couch_httpd:send_chunk(Resp, Start),
-            http_sender_send_rows(Resp, <<"\r\n">>);
+            http_sender_send_rows(Resp, ViewType, <<"\r\n">>);
         true ->
-            http_sender_collect_row_count(Req, RecvCount - 1, AccCount2)
+            http_sender_collect_row_count(Req, ViewType, RecvCount - 1, AccCount2)
         end
     end.
 
 
-http_sender_send_rows(Resp, Acc) ->
+http_sender_send_rows(Resp, ViewType, Acc) ->
     receive
     {row, Row} ->
-        RowEJson = view_row_obj(Row),
+        RowEJson = view_row_obj(ViewType, Row),
         couch_httpd:send_chunk(Resp, [Acc, ?JSON_ENCODE(RowEJson)]),
-        http_sender_send_rows(Resp, <<",\r\n">>);
+        http_sender_send_rows(Resp, ViewType, <<",\r\n">>);
     {stop, From} ->
         couch_httpd:send_chunk(Resp, <<"\r\n]}">>),
         Res = couch_httpd:end_json_response(Resp),
@@ -128,38 +163,44 @@ http_sender_send_rows(Resp, Acc) ->
     end.
 
 
-view_row_obj({{Key, error}, Value}) ->
+view_row_obj(map, {{Key, error}, Value}) ->
     {[{key, Key}, {error, Value}]};
 
-view_row_obj({{Key, DocId}, Value}) ->
+view_row_obj(map, {{Key, DocId}, Value}) ->
     {[{id, DocId}, {key, Key}, {value, Value}]};
 
-view_row_obj({{Key, DocId}, Value, Doc}) ->
-    {[{id, DocId}, {key, Key}, {value, Value}, Doc]}.
+view_row_obj(map, {{Key, DocId}, Value, Doc}) ->
+    {[{id, DocId}, {key, Key}, {value, Value}, Doc]};
+
+view_row_obj(reduce, {Key, Value}) ->
+    {[{key, Key}, {value, Value}]}.
 
 
-% NOTE: this merge logic will be different for reduce views
-merge_map_views([], _QueueMap, _LessFun, Sender, _Skip, _Limit) ->
+merge_map_views(#merge_params{queues = [], sender = Sender}) ->
     Sender ! {stop, self()},
     receive
     {Sender, Resp} ->
         {ok, Resp}
     end;
 
-merge_map_views(_Queues, _QueueMap, _LessFun, Sender, _Skip, 0) ->
+merge_map_views(#merge_params{limit = 0, sender = Sender}) ->
     Sender ! {stop, self()},
     receive
     {Sender, Resp} ->
         {stop, Resp}
     end;
 
-merge_map_views(Queues, QueueMap, LessFun, Sender, Skip, Limit) ->
+merge_map_views(#merge_params{sender = Sender} = Params) ->
+    #merge_params{
+        queues = Queues, less_fun = LessFun, queue_map = QueueMap,
+        limit = Limit, skip = Skip
+    } = Params,
     % QueueMap, map the last row taken from each queue to its respective
     % queue. Each row in this dict/map is a row that was not the smallest
     % one in the previous iteration.
     case dequeue(Queues, QueueMap, Sender) of
     {[], _, Queues2} ->
-        merge_map_views(Queues2, QueueMap, LessFun, Sender, Skip, Limit);
+        merge_map_views(Params#merge_params{queues = Queues2});
     {TopRows, RowsToQueuesMap, Queues2} ->
         {SmallestRow, RestRows} = take_smallest_row(TopRows, LessFun),
         [QueueSmallest | _] = dict:fetch(SmallestRow, RowsToQueuesMap),
@@ -177,9 +218,96 @@ merge_map_views(Queues, QueueMap, LessFun, Sender, Skip, Limit) ->
             Sender ! {row, SmallestRow},
             Limit2 = dec_counter(Limit)
         end,
-        merge_map_views(
-            Queues2, QueueMap2, LessFun, Sender, dec_counter(Skip), Limit2)
+        Params2 = Params#merge_params{
+            queues = Queues2, queue_map = QueueMap2,
+            skip = dec_counter(Skip), limit = Limit2
+        },
+        merge_map_views(Params2)
     end.
+
+
+merge_red_views(#merge_params{queues = [], sender = Sender}) ->
+    Sender ! {stop, self()},
+    receive
+    {Sender, Resp} ->
+        {ok, Resp}
+    end;
+
+merge_red_views(#merge_params{limit = 0, sender = Sender}) ->
+    Sender ! {stop, self()},
+    receive
+    {Sender, Resp} ->
+        {stop, Resp}
+    end;
+
+merge_red_views(#merge_params{sender = Sender} = Params) ->
+    #merge_params{
+        queues = Queues, less_fun = LessFun, queue_map = QueueMap,
+        limit = Limit, skip = Skip
+    } = Params,
+    % QueueMap, map the last row taken from each queue to its respective
+    % queue. Each row in this dict/map is a row that was not the smallest
+    % one in the previous iteration.
+    case dequeue(Queues, QueueMap, Sender) of
+    {[], _, Queues2} ->
+        merge_red_views(Params#merge_params{queues = Queues2});
+    {TopRows, RowsToQueuesMap, Queues2} ->
+        SortedRows = lists:sort(LessFun, TopRows),
+        [FirstGroup | RestGroups] = group_by_similar_keys(SortedRows, []),
+        case FirstGroup of
+        [Row] ->
+            ok;
+        [{K, _}, _ | _] ->
+            RedVal = rereduce(FirstGroup, Params),
+            Row = {K, RedVal}
+        end,
+        QueueMap2 = lists:foldl(
+            fun(R, Acc) ->
+                RQueues = dict:fetch(R, RowsToQueuesMap),
+                lists:foldl(fun(Q, D) -> dict:erase(Q, D) end, Acc, RQueues)
+            end,
+            QueueMap,
+            FirstGroup),
+        QueueMap3 = lists:foldl(
+            fun(R, Map) ->
+                QList = dict:fetch(R, RowsToQueuesMap),
+                lists:foldl(fun(Q, D) -> dict:store(Q, R, D) end, Map, QList)
+            end,
+            QueueMap2,
+            lists:flatten(RestGroups)),
+        case Skip > 0 of
+        true ->
+            Limit2 = Limit;
+        false ->
+            Sender ! {row, Row},
+            Limit2 = dec_counter(Limit)
+        end,
+        Params2 = Params#merge_params{
+            queues = Queues2, queue_map = QueueMap3,
+            skip = dec_counter(Skip), limit = Limit2
+        },
+        merge_red_views(Params2)
+    end.
+
+
+rereduce(Rows, #merge_params{view_lang = Lang, view_def = {ViewDef}}) ->
+    RedFun = get_value(<<"reduce">>, ViewDef),
+    Reds = [[Val] || {_Key, Val} <- Rows],
+    {ok, [Value]} = couch_query_servers:rereduce(Lang, [RedFun], Reds),
+    Value.
+
+
+group_by_similar_keys([], Groups) ->
+    lists:reverse(Groups);
+
+group_by_similar_keys([Row | Rest], []) ->
+    group_by_similar_keys(Rest, [[Row]]);
+
+group_by_similar_keys([{K, _} = R | Rest], [[{K, _} | _] = Group | RestGroups]) ->
+    group_by_similar_keys(Rest, [[R | Group] | RestGroups]);
+
+group_by_similar_keys([Row | Rest], Groups) ->
+    group_by_similar_keys(Rest, [[Row] | Groups]).
 
 
 dec_counter(0) -> 0;
@@ -269,6 +397,81 @@ map_view_folder(DbName, UserCtx, DDocId, ViewName, Keys, ViewArgs, Queue) ->
     end.
 
 
+red_view_folder(<<"http://", _/binary>> = _DbName, _UserCtx,
+                _DDocId, _ViewName, _Keys, _ViewArgs, _Queue) ->
+    % TODO
+    throw(?NYI);
+red_view_folder(<<"https://", _/binary>> = _DbName, _UserCtx,
+                _DDocId, _ViewName, _Keys, _ViewArgs, _Queue) ->
+    % TODO
+    throw(?NYI);
+red_view_folder(DbName, UserCtx, DDocId, ViewName, Keys, ViewArgs, Queue) ->
+    #view_query_args{
+        stale = Stale
+    } = ViewArgs,
+    {ok, Db} = couch_db:open(DbName, [{user_ctx, UserCtx}]),
+    try
+        FoldlFun = make_red_fold_fun(ViewArgs, Queue),
+        KeyGroupFun = make_group_rows_fun(ViewArgs),
+        {ok, View, _} = couch_view:get_reduce_view(Db, DDocId, ViewName, Stale),
+        case Keys of
+        nil ->
+            FoldOpts = [{key_group_fun, KeyGroupFun} |
+                couch_httpd_view:make_key_options(ViewArgs)],
+            {ok, _} = couch_view:fold_reduce(View, FoldlFun, [], FoldOpts);
+        _ when is_list(Keys) ->
+            lists:foreach(
+                fun(K) ->
+                    FoldOpts = [{key_group_fun, KeyGroupFun} |
+                        couch_httpd_view:make_key_options(
+                            ViewArgs#view_query_args{
+                                start_key = K, end_key = K})],
+                    {ok, _} = couch_view:fold_reduce(View, FoldlFun, [], FoldOpts)
+                end,
+                Keys)
+        end,
+        couch_work_queue:close(Queue)
+    after
+        couch_db:close(Db)
+    end.
+
+
+make_group_rows_fun(#view_query_args{group_level = 0}) ->
+    fun(_, _) -> true end;
+
+make_group_rows_fun(#view_query_args{group_level = L}) when is_integer(L) ->
+    fun({KeyA, _}, {KeyB, _}) when is_list(KeyA) andalso is_list(KeyB) ->
+        lists:sublist(KeyA, L) == lists:sublist(KeyB, L);
+    ({KeyA, _}, {KeyB, _}) ->
+        KeyA == KeyB
+    end;
+
+make_group_rows_fun(_) ->
+    fun({KeyA, _}, {KeyB, _}) -> KeyA == KeyB end.
+
+
+make_red_fold_fun(#view_query_args{group_level = 0}, Queue) ->
+    fun(_Key, Red, Acc) ->
+        couch_work_queue:queue(Queue, {null, Red}),
+        {ok, Acc}
+    end;
+
+make_red_fold_fun(#view_query_args{group_level = L}, Queue) when is_integer(L) ->
+    fun(Key, Red, Acc) when is_list(Key) ->
+        couch_work_queue:queue(Queue, {lists:sublist(Key, L), Red}),
+        {ok, Acc};
+    (Key, Red, Acc) ->
+        couch_work_queue:queue(Queue, {Key, Red}),
+        {ok, Acc}
+    end;
+
+make_red_fold_fun(_QueryArgs, Queue) ->
+    fun(Key, Red, Acc) ->
+        couch_work_queue:queue(Queue, {Key, Red}),
+        {ok, Acc}
+    end.
+
+
 get_map_view(Db, DDocId, ViewName, Stale) ->
     case couch_view:get_map_view(Db, DDocId, ViewName, Stale) of
     {ok, MapView, _} ->
@@ -308,24 +511,24 @@ make_map_fold_fun(true, Conflicts, Db, Queue) ->
     end.
 
 
-check_view_exists([], _UserCtx, _DDocId, _ViewName, ViewDef) ->
-    ViewDef;
-check_view_exists([DbName | Rest], UserCtx, DDocId, ViewName, ViewDef) ->
+check_view_exists([], _UserCtx, _DDocId, _ViewName, DDoc) ->
+    DDoc;
+check_view_exists([DbName | Rest], UserCtx, DDocId, ViewName, DDoc) ->
     {ok, Db} = open_db(DbName, UserCtx),
-    #doc{body = Body} = get_ddoc(Db, DDocId),
+    #doc{body = ThisDDoc} = get_ddoc(Db, DDocId),
     couch_api_wrap:db_close(Db),
-    ThisViewDef = try
-        get_nested_json_value(Body, [<<"views">>, ViewName])
+    try
+        get_nested_json_value(ThisDDoc, [<<"views">>, ViewName])
     catch throw:_ ->
         throw({<<"missing_view_in_db">>, ?l2b(couch_api_wrap:db_uri(Db))})
     end,
-    case ViewDef of
+    case DDoc of
     nil ->
-        check_view_exists(Rest, UserCtx, DDocId, ViewName, ThisViewDef);
-    ThisViewDef ->
-        check_view_exists(Rest, UserCtx, DDocId, ViewName, ViewDef);
+        check_view_exists(Rest, UserCtx, DDocId, ViewName, ThisDDoc);
+    ThisDDoc ->
+        check_view_exists(Rest, UserCtx, DDocId, ViewName, DDoc);
     _ ->
-        throw({<<"view_defs_dont_match">>, DDocId, ViewName})
+        throw({<<"ddocs_dont_match">>, DDocId, ViewName})
     end.
 
 
