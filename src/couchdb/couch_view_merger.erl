@@ -12,7 +12,7 @@
 
 -module(couch_view_merger).
 
--export([query_view/5]).
+-export([query_view/7]).
 
 -include("couch_db.hrl").
 -include("couch_api_wrap.hrl").
@@ -32,13 +32,14 @@
     view_def,
     view_lang,
     less_fun,
-    sender,
+    collector,
     skip,
     limit
 }).
 
 
-query_view(DDocId, ViewName, DbNames, Keys, #httpd{user_ctx = UserCtx} = Req) ->
+query_view(Req, DDocId, ViewName, DbNames, Keys, Callback, UserAcc) ->
+    #httpd{user_ctx = UserCtx} = Req,
     {Props} = DDoc = check_view_exists(DbNames, UserCtx, DDocId, ViewName, nil),
     ViewDef = get_nested_json_value(DDoc, [<<"views">>, ViewName]),
     ViewLang = get_value(<<"language">>, Props, <<"javascript">>),
@@ -60,14 +61,15 @@ query_view(DDocId, ViewName, DbNames, Keys, #httpd{user_ctx = UserCtx} = Req) ->
             {[Q | QAcc], [Pid | PidAcc]}
         end,
         {[], []}, DbNames),
-    Sender = spawn_link(
-        fun() -> http_sender_loop(Req, ViewType, length(Queues)) end),
+    Collector = spawn_link(fun() ->
+        collector_loop(ViewType, length(Queues), Callback, UserAcc)
+    end),
     MergeParams = #merge_params{
         queues = Queues,
         view_def = ViewDef,
         view_lang = ViewLang,
         less_fun = LessFun,
-        sender = Sender,
+        collector = Collector,
         skip = ViewArgs#view_query_args.skip,
         limit = ViewArgs#view_query_args.limit
     },
@@ -121,16 +123,15 @@ view_type({ViewDef}, Req) ->
     end.
 
 
-http_sender_loop(Req, map, NumFolders) ->
-    http_sender_collect_row_count(Req, map, NumFolders, 0);
+collector_loop(map, NumFolders, Callback, UserAcc) ->
+    collect_row_count(map, NumFolders, 0, Callback, UserAcc);
 
-http_sender_loop(Req, reduce, _NumFolders) ->
-    {ok, Resp} = couch_httpd:start_json_response(Req, 200, []),
-    couch_httpd:send_chunk(Resp, <<"{\"rows\":[">>),
-    http_sender_send_rows(Resp, reduce, <<"\r\n">>).
+collector_loop(reduce, _NumFolders, Callback, UserAcc) ->
+    UserAcc2 = Callback(start, UserAcc),
+    collect_rows(reduce, Callback, UserAcc2).
 
 
-http_sender_collect_row_count(Req, ViewType, RecvCount, AccCount) ->
+collect_row_count(ViewType, RecvCount, AccCount, Callback, UserAcc) ->
     receive
     {row_count, Count} ->
         AccCount2 = AccCount + Count,
@@ -139,27 +140,24 @@ http_sender_collect_row_count(Req, ViewType, RecvCount, AccCount) ->
             % TODO: what about offset and update_seq?
             % TODO: maybe add etag like for regular views? How to
             %       compute them?
-            Start = io_lib:format(
-                "{\"total_rows\":~w,\"rows\":[", [AccCount2]),
-            {ok, Resp} = couch_httpd:start_json_response(Req, 200, []),
-            couch_httpd:send_chunk(Resp, Start),
-            http_sender_send_rows(Resp, ViewType, <<"\r\n">>);
+            UserAcc2 = Callback({start, AccCount2}, UserAcc),
+            collect_rows(ViewType, Callback, UserAcc2);
         true ->
-            http_sender_collect_row_count(Req, ViewType, RecvCount - 1, AccCount2)
+            collect_row_count(
+                ViewType, RecvCount - 1, AccCount2, Callback, UserAcc)
         end
     end.
 
 
-http_sender_send_rows(Resp, ViewType, Acc) ->
+collect_rows(ViewType, Callback, UserAcc) ->
     receive
     {row, Row} ->
         RowEJson = view_row_obj(ViewType, Row),
-        couch_httpd:send_chunk(Resp, [Acc, ?JSON_ENCODE(RowEJson)]),
-        http_sender_send_rows(Resp, ViewType, <<",\r\n">>);
+        UserAcc2 = Callback({row, RowEJson}, UserAcc),
+        collect_rows(ViewType, Callback, UserAcc2);
     {stop, From} ->
-        couch_httpd:send_chunk(Resp, <<"\r\n]}">>),
-        Res = couch_httpd:end_json_response(Resp),
-        From ! {self(), Res}
+        UserAcc2 = Callback(stop, UserAcc),
+        From ! {self(), UserAcc2}
     end.
 
 
@@ -176,29 +174,29 @@ view_row_obj(reduce, {Key, Value}) ->
     {[{key, Key}, {value, Value}]}.
 
 
-merge_map_views(#merge_params{queues = [], sender = Sender}) ->
-    Sender ! {stop, self()},
+merge_map_views(#merge_params{queues = [], collector = Col}) ->
+    Col ! {stop, self()},
     receive
-    {Sender, Resp} ->
+    {Col, Resp} ->
         {ok, Resp}
     end;
 
-merge_map_views(#merge_params{limit = 0, sender = Sender}) ->
-    Sender ! {stop, self()},
+merge_map_views(#merge_params{limit = 0, collector = Col}) ->
+    Col ! {stop, self()},
     receive
-    {Sender, Resp} ->
+    {Col, Resp} ->
         {stop, Resp}
     end;
 
-merge_map_views(#merge_params{sender = Sender} = Params) ->
+merge_map_views(Params) ->
     #merge_params{
         queues = Queues, less_fun = LessFun, queue_map = QueueMap,
-        limit = Limit, skip = Skip
+        limit = Limit, skip = Skip, collector = Col
     } = Params,
     % QueueMap, map the last row taken from each queue to its respective
     % queue. Each row in this dict/map is a row that was not the smallest
     % one in the previous iteration.
-    case dequeue(Queues, QueueMap, Sender) of
+    case dequeue(Queues, QueueMap, Col) of
     {[], _, Queues2} ->
         merge_map_views(Params#merge_params{queues = Queues2});
     {TopRows, RowsToQueuesMap, Queues2} ->
@@ -215,7 +213,7 @@ merge_map_views(#merge_params{sender = Sender} = Params) ->
         true ->
             Limit2 = Limit;
         false ->
-            Sender ! {row, SmallestRow},
+            Col ! {row, SmallestRow},
             Limit2 = dec_counter(Limit)
         end,
         Params2 = Params#merge_params{
@@ -226,29 +224,29 @@ merge_map_views(#merge_params{sender = Sender} = Params) ->
     end.
 
 
-merge_red_views(#merge_params{queues = [], sender = Sender}) ->
-    Sender ! {stop, self()},
+merge_red_views(#merge_params{queues = [], collector = Col}) ->
+    Col ! {stop, self()},
     receive
-    {Sender, Resp} ->
+    {Col, Resp} ->
         {ok, Resp}
     end;
 
-merge_red_views(#merge_params{limit = 0, sender = Sender}) ->
-    Sender ! {stop, self()},
+merge_red_views(#merge_params{limit = 0, collector = Col}) ->
+    Col ! {stop, self()},
     receive
-    {Sender, Resp} ->
+    {Col, Resp} ->
         {stop, Resp}
     end;
 
-merge_red_views(#merge_params{sender = Sender} = Params) ->
+merge_red_views(Params) ->
     #merge_params{
         queues = Queues, less_fun = LessFun, queue_map = QueueMap,
-        limit = Limit, skip = Skip
+        limit = Limit, skip = Skip, collector = Col
     } = Params,
     % QueueMap, map the last row taken from each queue to its respective
     % queue. Each row in this dict/map is a row that was not the smallest
     % one in the previous iteration.
-    case dequeue(Queues, QueueMap, Sender) of
+    case dequeue(Queues, QueueMap, Col) of
     {[], _, Queues2} ->
         merge_red_views(Params#merge_params{queues = Queues2});
     {TopRows, RowsToQueuesMap, Queues2} ->
@@ -279,7 +277,7 @@ merge_red_views(#merge_params{sender = Sender} = Params) ->
         true ->
             Limit2 = Limit;
         false ->
-            Sender ! {row, Row},
+            Col ! {row, Row},
             Limit2 = dec_counter(Limit)
         end,
         Params2 = Params#merge_params{
@@ -314,7 +312,7 @@ dec_counter(0) -> 0;
 dec_counter(N) -> N - 1.
 
 
-dequeue(Queues, QueueMap, Sender) ->
+dequeue(Queues, QueueMap, Collector) ->
     % need to keep track from which queues each row was taken
     RowsToQueuesMap0 = dict:new(),
     % order of TopRows is important
@@ -326,7 +324,7 @@ dequeue(Queues, QueueMap, Sender) ->
             error ->
                 case couch_work_queue:dequeue(Q, 1) of
                 {ok, [{row_count, _} = RowCount]} ->
-                    Sender ! RowCount,
+                    Collector ! RowCount,
                     case couch_work_queue:dequeue(Q, 1) of
                     {ok, [Row]} ->
                         {[Row | RowAcc], dict:append(Row, Q, RMap), Closed};

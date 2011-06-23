@@ -27,7 +27,8 @@ handle_req(#httpd{method = 'GET'} = Req) ->
     {DDocId, ViewName} = validate_viewname_param(
         couch_httpd:qs_json_value(Req, "viewname")),
     Keys = validate_keys_param(couch_httpd:qs_json_value(Req, "keys", nil)),
-    couch_view_merger:query_view(DDocId, ViewName, Dbs, Keys, Req);
+    couch_view_merger:query_view(
+        Req, DDocId, ViewName, Dbs, Keys, fun http_sender/2, {Req, nil});
 
 handle_req(#httpd{method = 'POST'} = Req) ->
     couch_httpd:validate_ctype(Req, "application/json"),
@@ -36,10 +37,32 @@ handle_req(#httpd{method = 'POST'} = Req) ->
     {DDocId, ViewName} = validate_viewname_param(
         get_value(<<"viewname">>, Props)),
     Keys = validate_keys_param(get_value(<<"keys">>, Props, nil)),
-    couch_view_merger:query_view(DDocId, ViewName, Dbs, Keys, Req);
+    couch_view_merger:query_view(
+        Req, DDocId, ViewName, Dbs, Keys, fun http_sender/2, {Req, nil});
 
 handle_req(Req) ->
     couch_httpd:send_method_not_allowed(Req, "GET,POST").
+
+
+http_sender(start, {Req, nil}) ->
+    {ok, Resp} = couch_httpd:start_json_response(Req, 200, []),
+    couch_httpd:send_chunk(Resp, <<"{\"rows\":[">>),
+    {Resp, <<"\r\n">>};
+
+http_sender({start, RowCount}, {Req, nil}) ->
+    Start = io_lib:format(
+        "{\"total_rows\":~w,\"rows\":[", [RowCount]),
+    {ok, Resp} = couch_httpd:start_json_response(Req, 200, []),
+    couch_httpd:send_chunk(Resp, Start),
+    {Resp, <<"\r\n">>};
+
+http_sender({row, Row}, {Resp, Acc}) ->
+    couch_httpd:send_chunk(Resp, [Acc, ?JSON_ENCODE(Row)]),
+    {Resp, <<",\r\n">>};
+
+http_sender(stop, {Resp, _Acc}) ->
+    couch_httpd:send_chunk(Resp, <<"\r\n]}">>),
+    couch_httpd:end_json_response(Resp).
 
 
 validate_databases_param([_Db1 | _Rest] = Dbs) ->
