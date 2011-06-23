@@ -10,7 +10,7 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 
--module(couch_httpd_cluster_view).
+-module(couch_httpd_view_merger).
 
 -export([handle_req/1]).
 
@@ -27,7 +27,7 @@ handle_req(#httpd{method = 'GET'} = Req) ->
     {DDocId, ViewName} = validate_viewname_param(
         couch_httpd:qs_json_value(Req, "viewname")),
     Keys = validate_keys_param(couch_httpd:qs_json_value(Req, "keys", nil)),
-    couch_cluster_view:query_view(DDocId, ViewName, Dbs, Keys, Req);
+    couch_view_merger:query_view(DDocId, ViewName, Dbs, Keys, Req);
 
 handle_req(#httpd{method = 'POST'} = Req) ->
     couch_httpd:validate_ctype(Req, "application/json"),
@@ -36,7 +36,7 @@ handle_req(#httpd{method = 'POST'} = Req) ->
     {DDocId, ViewName} = validate_viewname_param(
         get_value(<<"viewname">>, Props)),
     Keys = validate_keys_param(get_value(<<"keys">>, Props, nil)),
-    couch_cluster_view:query_view(DDocId, ViewName, Dbs, Keys, Req);
+    couch_view_merger:query_view(DDocId, ViewName, Dbs, Keys, Req);
 
 handle_req(Req) ->
     couch_httpd:send_method_not_allowed(Req, "GET,POST").

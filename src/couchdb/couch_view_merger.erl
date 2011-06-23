@@ -10,7 +10,7 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 
--module(couch_cluster_view).
+-module(couch_view_merger).
 
 -export([query_view/5]).
 

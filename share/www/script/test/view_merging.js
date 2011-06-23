@@ -10,7 +10,7 @@
 // License for the specific language governing permissions and limitations under
 // the License.
 
-couchTests.cluster_view = function(debug) {
+couchTests.view_merging = function(debug) {
   if (debug) debugger;
 
   function newDb(name) {
@@ -54,7 +54,7 @@ couchTests.cluster_view = function(debug) {
     }
   }
 
-  function clusterQuery(dbs, viewname, options) {
+  function mergedQuery(dbs, viewname, options) {
     var dbNames = [];
     options = options || {};
 
@@ -83,7 +83,7 @@ couchTests.cluster_view = function(debug) {
       qs = "?" + qs;
     }
 
-    var xhr = CouchDB.request("POST", "/_cluster_view" + qs, {
+    var xhr = CouchDB.request("POST", "/_view_merge" + qs, {
       headers: {
         "Content-Type": "application/json"
       },
@@ -166,7 +166,7 @@ couchTests.cluster_view = function(debug) {
 
   addDoc(dbs, ddoc);
 
-  resp = clusterQuery(dbs, "test/mapview1");
+  resp = mergedQuery(dbs, "test/mapview1");
 
   TEquals("object", typeof resp);
   TEquals(0, resp.total_rows);
@@ -183,7 +183,7 @@ couchTests.cluster_view = function(debug) {
   addDoc(dbs, ddoc);
   populateSequenced([dbA], docs);
 
-  resp = clusterQuery(dbs, "test/mapview1");
+  resp = mergedQuery(dbs, "test/mapview1");
 
   TEquals("object", typeof resp);
   TEquals(10, resp.total_rows);
@@ -202,7 +202,7 @@ couchTests.cluster_view = function(debug) {
   addDoc(dbs, ddoc);
   populateAlternated(dbs, docs);
 
-  resp = clusterQuery(dbs, "test/mapview1");
+  resp = mergedQuery(dbs, "test/mapview1");
 
   TEquals("object", typeof resp);
   TEquals(40, resp.total_rows);
@@ -214,7 +214,7 @@ couchTests.cluster_view = function(debug) {
   // now test stale=ok works
   populateAlternated(dbs, makeDocs(41, 43));
 
-  resp = clusterQuery(dbs, "test/mapview1", {stale: "ok"});
+  resp = mergedQuery(dbs, "test/mapview1", {stale: "ok"});
 
   TEquals("object", typeof resp);
   TEquals(40, resp.total_rows);
@@ -223,7 +223,7 @@ couchTests.cluster_view = function(debug) {
 
   // test stale=update_after works
 
-  resp = clusterQuery(dbs, "test/mapview1", {stale: "update_after"});
+  resp = mergedQuery(dbs, "test/mapview1", {stale: "update_after"});
 
   TEquals("object", typeof resp);
   TEquals(40, resp.total_rows);
@@ -233,7 +233,7 @@ couchTests.cluster_view = function(debug) {
   // wait a bit, the view should now reflect the 2 new documents
   wait(1000);
 
-  resp = clusterQuery(dbs, "test/mapview1", {stale: "ok"});
+  resp = mergedQuery(dbs, "test/mapview1", {stale: "ok"});
 
   TEquals("object", typeof resp);
   TEquals(42, resp.total_rows);
@@ -256,7 +256,7 @@ couchTests.cluster_view = function(debug) {
   addDoc(dbs, ddoc);
   populateSequenced(dbs, docs);
 
-  resp = clusterQuery(dbs, "test/mapview1");
+  resp = mergedQuery(dbs, "test/mapview1");
 
   TEquals("object", typeof resp);
   TEquals(40, resp.total_rows);
@@ -279,7 +279,7 @@ couchTests.cluster_view = function(debug) {
   addDoc(dbs, ddoc);
   populateAlternated(dbs, docs);
 
-  resp = clusterQuery(dbs, "test/mapview1");
+  resp = mergedQuery(dbs, "test/mapview1");
 
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
@@ -289,7 +289,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test skip=N query parameter
-  resp = clusterQuery(dbs, "test/mapview1", {"skip": 2});
+  resp = mergedQuery(dbs, "test/mapview1", {"skip": 2});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -301,7 +301,7 @@ couchTests.cluster_view = function(debug) {
 
   testKeysSorted(resp);
 
-  resp = clusterQuery(dbs, "test/mapview1", {"skip": 49});
+  resp = mergedQuery(dbs, "test/mapview1", {"skip": 49});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -311,7 +311,7 @@ couchTests.cluster_view = function(debug) {
 
   testKeysSorted(resp);
 
-  resp = clusterQuery(dbs, "test/mapview1", {"skip": 0});
+  resp = mergedQuery(dbs, "test/mapview1", {"skip": 0});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -322,7 +322,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test limit=N query parameter
-  resp = clusterQuery(dbs, "test/mapview1", {"limit": 1});
+  resp = mergedQuery(dbs, "test/mapview1", {"limit": 1});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -330,7 +330,7 @@ couchTests.cluster_view = function(debug) {
   TEquals(1, resp.rows[0].key);
   TEquals("1", resp.rows[0].id);
 
-  resp = clusterQuery(dbs, "test/mapview1", {"limit": 10});
+  resp = mergedQuery(dbs, "test/mapview1", {"limit": 10});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -342,7 +342,7 @@ couchTests.cluster_view = function(debug) {
 
   testKeysSorted(resp);
 
-  resp = clusterQuery(dbs, "test/mapview1", {"limit": 1000});
+  resp = mergedQuery(dbs, "test/mapview1", {"limit": 1000});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -355,7 +355,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test skip=N with limit=N query parameters
-  resp = clusterQuery(dbs, "test/mapview1", {"limit": 10, "skip": 10});
+  resp = mergedQuery(dbs, "test/mapview1", {"limit": 10, "skip": 10});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -368,7 +368,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test starkey query parameter
-  resp = clusterQuery(dbs, "test/mapview1", {"startkey": 10});
+  resp = mergedQuery(dbs, "test/mapview1", {"startkey": 10});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -381,7 +381,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test starkey query parameter with startkey_docid (same result as before)
-  resp = clusterQuery(dbs, "test/mapview1",
+  resp = mergedQuery(dbs, "test/mapview1",
       {"startkey": 10, "startkey_docid": "10"});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
@@ -395,7 +395,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test starkey query parameter with startkey_docid (not same result as before)
-  resp = clusterQuery(dbs, "test/mapview1",
+  resp = mergedQuery(dbs, "test/mapview1",
       {"startkey": 10, "startkey_docid": "11"});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
@@ -409,7 +409,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test starkey query parameter with limit
-  resp = clusterQuery(dbs, "test/mapview1", {"startkey": 10, "limit": 5});
+  resp = mergedQuery(dbs, "test/mapview1", {"startkey": 10, "limit": 5});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -422,7 +422,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test starkey query parameter with limit and skip
-  resp = clusterQuery(dbs, "test/mapview1", {"startkey": 10, "limit": 5, "skip": 2});
+  resp = mergedQuery(dbs, "test/mapview1", {"startkey": 10, "limit": 5, "skip": 2});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -435,7 +435,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test endkey query parameter
-  resp = clusterQuery(dbs, "test/mapview1", {"endkey": 10});
+  resp = mergedQuery(dbs, "test/mapview1", {"endkey": 10});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -448,7 +448,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test endkey query parameter with endkey_docid (same result as before)
-  resp = clusterQuery(dbs, "test/mapview1", {"endkey": 10, "endkey_docid": "10"});
+  resp = mergedQuery(dbs, "test/mapview1", {"endkey": 10, "endkey_docid": "10"});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -461,7 +461,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test endkey query parameter with endkey_docid (not same result as before)
-  resp = clusterQuery(dbs, "test/mapview1", {"endkey": 10, "endkey_docid": "0"});
+  resp = mergedQuery(dbs, "test/mapview1", {"endkey": 10, "endkey_docid": "0"});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -474,7 +474,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test endkey query parameter with inclusive_end=false
-  resp = clusterQuery(dbs, "test/mapview1",
+  resp = mergedQuery(dbs, "test/mapview1",
     {"endkey": 10, "inclusive_end": "false"});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
@@ -486,7 +486,7 @@ couchTests.cluster_view = function(debug) {
   TEquals("9", resp.rows[8].id);
 
   // test endkey query parameter with limit
-  resp = clusterQuery(dbs, "test/mapview1", {"endkey": 10, "limit": 3});
+  resp = mergedQuery(dbs, "test/mapview1", {"endkey": 10, "limit": 3});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -499,7 +499,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test starkey with endkey query parameter
-  resp = clusterQuery(dbs, "test/mapview1", {"startkey": 10, "endkey": 20});
+  resp = mergedQuery(dbs, "test/mapview1", {"startkey": 10, "endkey": 20});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -512,7 +512,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test starkey query parameter with descending order
-  resp = clusterQuery(dbs, "test/mapview1", {"startkey": 10, "descending": true});
+  resp = mergedQuery(dbs, "test/mapview1", {"startkey": 10, "descending": true});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -525,7 +525,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp, "rev");
 
   // test starkey query parameter with endkey and descending order
-  resp = clusterQuery(dbs, "test/mapview1",
+  resp = mergedQuery(dbs, "test/mapview1",
     {"startkey": 10, "endkey": 5, "descending": true});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
@@ -539,7 +539,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp, "rev");
 
   // test key query parameter
-  resp = clusterQuery(dbs, "test/mapview1", {"key": 10});
+  resp = mergedQuery(dbs, "test/mapview1", {"key": 10});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -547,7 +547,7 @@ couchTests.cluster_view = function(debug) {
   TEquals(10, resp.rows[0].key);
   TEquals("10", resp.rows[0].id);
 
-  resp = clusterQuery(dbs, "test/mapview1", {"key": 1000});
+  resp = mergedQuery(dbs, "test/mapview1", {"key": 1000});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -555,7 +555,7 @@ couchTests.cluster_view = function(debug) {
 
   // test keys=[key1, key2, key3...] query parameter
   var keys = [5, 3, 10, 39, 666, 21];
-  resp = clusterQuery(dbs, "test/mapview1", {"keys": keys});
+  resp = mergedQuery(dbs, "test/mapview1", {"keys": keys});
   keys.sort(function(a, b) { return a - b; });
 
   TEquals("object", typeof resp);
@@ -570,7 +570,7 @@ couchTests.cluster_view = function(debug) {
   testKeysSorted(resp);
 
   // test include_docs query parameter
-  resp = clusterQuery(dbs, "test/mapview1", {"include_docs": "true"});
+  resp = mergedQuery(dbs, "test/mapview1", {"include_docs": "true"});
   TEquals("object", typeof resp);
   TEquals(50, resp.total_rows);
   TEquals("object", typeof resp.rows);
@@ -611,22 +611,22 @@ couchTests.cluster_view = function(debug) {
   var respFull, respMerged;
 
   respFull = dbFull.view("test/redview1", {"reduce": false});
-  respMerged = clusterQuery(dbs, "test/redview1", {"reduce": false});
+  respMerged = mergedQuery(dbs, "test/redview1", {"reduce": false});
 
   compareViewResults(respFull, respMerged);
 
   respFull = dbFull.view("test/redview1", {"group": false});
-  respMerged = clusterQuery(dbs, "test/redview1", {"group": false});
+  respMerged = mergedQuery(dbs, "test/redview1", {"group": false});
 
   compareViewResults(respFull, respMerged);
 
   respFull = dbFull.view("test/redview1", {"group_level": 1});
-  respMerged = clusterQuery(dbs, "test/redview1", {"group_level": 1});
+  respMerged = mergedQuery(dbs, "test/redview1", {"group_level": 1});
 
   compareViewResults(respFull, respMerged);
 
   respFull = dbFull.view("test/redview1", {"group": true});
-  respMerged = clusterQuery(dbs, "test/redview1", {"group": true});
+  respMerged = mergedQuery(dbs, "test/redview1", {"group": true});
 
   compareViewResults(respFull, respMerged);
 
@@ -635,7 +635,7 @@ couchTests.cluster_view = function(debug) {
 
   respFull = dbFull.view("test/redview1",
     {"group": true, "startkey": startkey});
-  respMerged = clusterQuery(dbs, "test/redview1",
+  respMerged = mergedQuery(dbs, "test/redview1",
     {"group": true, "startkey": startkeyJson});
 
   TEquals(startkeyJson, JSON.stringify(respFull.rows[0].key),
@@ -649,7 +649,7 @@ couchTests.cluster_view = function(debug) {
 
   respFull = dbFull.view("test/redview1",
     {"group": true, "startkey": startkey, "endkey": endkey});
-  respMerged = clusterQuery(dbs, "test/redview1",
+  respMerged = mergedQuery(dbs, "test/redview1",
     {"group": true, "startkey": startkeyJson, "endkey": endkeyJson});
 
   TEquals(startkeyJson, JSON.stringify(respFull.rows[0].key),
