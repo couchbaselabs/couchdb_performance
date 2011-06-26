@@ -26,8 +26,6 @@
     start_json_response/2, start_json_response/3, end_json_response/1,
     send_chunked_error/2]).
 
--import(couch_db,[get_update_seq/1]).
-
 design_doc_view(Req, Db, DName, ViewName, Keys) ->
     DesignId = <<"_design/", DName/binary>>,
     Stale = get_stale_type(Req),

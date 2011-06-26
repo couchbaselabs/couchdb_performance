@@ -136,7 +136,7 @@ send_doc_update_response(Req, Db, DDoc, UpdateName, Doc, DocId) ->
                 []
             end,
             NewDoc = couch_doc:from_json_obj({NewJsonDoc}),
-            {ok, NewRev} = couch_db:update_doc(Db, NewDoc, Options),
+            {ok, NewRev} = couch_http_frontend:update_doc(Db, NewDoc, Options),
             NewRevStr = couch_doc:rev_to_str(NewRev),
             JsonRespWithRev =  {[{<<"headers">>,
                 {[{<<"X-Couch-Update-NewRev">>, NewRevStr}]}} | JsonResp]},

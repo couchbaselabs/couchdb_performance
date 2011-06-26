@@ -122,6 +122,7 @@ compiled_files = \
     couch_external_manager.beam \
     couch_external_server.beam \
     couch_file.beam \
+    couch_http_frontend.beam \
     couch_httpc_pool.beam \
     couch_httpd.beam \
     couch_httpd_db.beam \

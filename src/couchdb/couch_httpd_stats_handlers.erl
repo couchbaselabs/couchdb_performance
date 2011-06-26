@@ -22,14 +22,14 @@
 
 handle_stats_req(#httpd{method='GET', path_parts=[_]}=Req) ->
     flush(Req),
-    send_json(Req, couch_stats_aggregator:all(range(Req)));
+    send_json(Req, couch_http_frontend:stats_aggregator_all(range(Req)));
 
 handle_stats_req(#httpd{method='GET', path_parts=[_, _Mod]}) ->
     throw({bad_request, <<"Stat names must have exactly to parts.">>});
 
 handle_stats_req(#httpd{method='GET', path_parts=[_, Mod, Key]}=Req) ->
     flush(Req),
-    Stats = couch_stats_aggregator:get_json({list_to_atom(binary_to_list(Mod)),
+    Stats = couch_http_frontend:stats_aggregator_get_json({list_to_atom(binary_to_list(Mod)),
         list_to_atom(binary_to_list(Key))}, range(Req)),
     send_json(Req, {[{Mod, {[{Key, Stats}]}}]});
 
@@ -50,7 +50,7 @@ range(Req) ->
 flush(Req) ->
     case couch_util:get_value("flush", couch_httpd:qs(Req)) of
         "true" ->
-            couch_stats_aggregator:collect_sample();
+            couch_http_frontend:stats_aggregator_collect_sample();
         _Else ->
             ok
     end.

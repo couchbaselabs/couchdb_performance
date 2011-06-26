@@ -65,7 +65,7 @@ handle_utils_dir_req(Req, _) ->
     send_method_not_allowed(Req, "GET,HEAD").
 
 handle_all_dbs_req(#httpd{method='GET'}=Req) ->
-    {ok, DbNames} = couch_server:all_databases(),
+    {ok, DbNames} = couch_http_frontend:all_databases(),
     send_json(Req, DbNames);
 handle_all_dbs_req(Req) ->
     send_method_not_allowed(Req, "GET,HEAD").
@@ -74,7 +74,7 @@ handle_all_dbs_req(Req) ->
 handle_task_status_req(#httpd{method='GET'}=Req) ->
     ok = couch_httpd:verify_is_server_admin(Req),
     % convert the list of prop lists to a list of json objects
-    send_json(Req, [{Props} || Props <- couch_task_status:all()]);
+    send_json(Req, [{Props} || Props <- couch_http_frontend:task_status_all()]);
 handle_task_status_req(Req) ->
     send_method_not_allowed(Req, "GET,HEAD").
 
@@ -82,7 +82,7 @@ handle_task_status_req(Req) ->
 handle_restart_req(#httpd{method='POST'}=Req) ->
     couch_httpd:validate_ctype(Req, "application/json"),
     ok = couch_httpd:verify_is_server_admin(Req),
-    couch_server_sup:restart_core_server(),
+    couch_http_frontend:restart_core_server(),
     send_json(Req, 200, {[{ok, true}]});
 handle_restart_req(Req) ->
     send_method_not_allowed(Req, "POST").
@@ -121,7 +121,7 @@ handle_config_req(#httpd{method='GET', path_parts=[_]}=Req) ->
         false ->
             dict:store(Section, [{list_to_binary(Key), list_to_binary(Value)}], Acc)
         end
-    end, dict:new(), couch_config:all()),
+    end, dict:new(), couch_http_frontend:config_all()),
     KVs = dict:fold(fun(Section, Values, Acc) ->
         [{list_to_binary(Section), {Values}} | Acc]
     end, [], Grouped),
@@ -130,12 +130,12 @@ handle_config_req(#httpd{method='GET', path_parts=[_]}=Req) ->
 handle_config_req(#httpd{method='GET', path_parts=[_,Section]}=Req) ->
     ok = couch_httpd:verify_is_server_admin(Req),
     KVs = [{list_to_binary(Key), list_to_binary(Value)}
-            || {Key, Value} <- couch_config:get(Section)],
+            || {Key, Value} <- couch_http_frontend:config_get(Section)],
     send_json(Req, 200, {KVs});
 % GET /_config/Section/Key
 handle_config_req(#httpd{method='GET', path_parts=[_, Section, Key]}=Req) ->
     ok = couch_httpd:verify_is_server_admin(Req),
-    case couch_config:get(Section, Key, null) of
+    case couch_http_frontend:config_get(Section, Key, null) of
     null ->
         throw({not_found, unknown_config_value});
     Value ->
@@ -205,8 +205,8 @@ handle_config_req(Req) ->
 % "value"
 handle_approved_config_req(#httpd{method='PUT', path_parts=[_, Section, Key]}=Req, Persist) ->
     Value = couch_httpd:json_body(Req),
-    OldValue = couch_config:get(Section, Key, ""),
-    case couch_config:set(Section, Key, ?b2l(Value), Persist) of
+    OldValue = couch_http_frontend:config_get(Section, Key, ""),
+    case couch_http_frontend:config_set(Section, Key, ?b2l(Value), Persist) of
     ok ->
         send_json(Req, 200, list_to_binary(OldValue));
     Error ->
@@ -214,11 +214,11 @@ handle_approved_config_req(#httpd{method='PUT', path_parts=[_, Section, Key]}=Re
     end;
 % DELETE /_config/Section/Key
 handle_approved_config_req(#httpd{method='DELETE',path_parts=[_,Section,Key]}=Req, Persist) ->
-    case couch_config:get(Section, Key, null) of
+    case couch_http_frontend:config_get(Section, Key, null) of
     null ->
         throw({not_found, unknown_config_value});
     OldValue ->
-        couch_config:delete(Section, Key, Persist),
+        couch_http_frontend:config_delete(Section, Key, Persist),
         send_json(Req, 200, list_to_binary(OldValue))
     end.
 
@@ -227,7 +227,7 @@ handle_approved_config_req(#httpd{method='DELETE',path_parts=[_,Section,Key]}=Re
 
 increment_update_seq_req(#httpd{method='POST'}=Req, Db) ->
     couch_httpd:validate_ctype(Req, "application/json"),
-    {ok, NewSeq} = couch_db:increment_update_seq(Db),
+    {ok, NewSeq} = couch_http_frontend:increment_update_seq(Db),
     send_json(Req, {[{ok, true},
         {update_seq, NewSeq}
     ]});
