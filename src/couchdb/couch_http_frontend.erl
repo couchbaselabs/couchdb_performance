@@ -160,3 +160,22 @@ stats_aggregator_get_json(Key, Range) ->
 stats_aggregator_collect_sample() ->
     couch_stats_aggregator:collect_sample().
 
+couch_doc_open(Db, DocId, Rev, Options) ->
+    case Rev of
+    nil -> % open most recent rev
+        case open_doc(Db, DocId, Options) of
+        {ok, Doc} ->
+            Doc;
+         Error ->
+             throw(Error)
+         end;
+  _ -> % open a specific rev (deletions come back as stubs)
+      case open_doc_revs(Db, DocId, [Rev], Options) of
+          {ok, [{ok, Doc}]} ->
+              Doc;
+          {ok, [{{not_found, missing}, Rev}]} ->
+              throw(not_found);
+          {ok, [Else]} ->
+              throw(Else)
+      end
+  end.
