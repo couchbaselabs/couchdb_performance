@@ -117,7 +117,7 @@ open_doc(Db, DocId, Options) ->
 
 make_attachment_fold(_Att, ReqAcceptsAttEnc) ->
     case ReqAcceptsAttEnc of
-        true -> fun couch_doc:att_foldl_decode/3;
+        false -> fun couch_doc:att_foldl_decode/3;
         _ -> fun couch_doc:att_foldl/3
     end.
 
