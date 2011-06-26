@@ -104,6 +104,12 @@ dev: all
 	mkdir -p $(top_builddir)/tmp/log
 	mkdir -p $(top_builddir)/tmp/run/couchdb
 
+../couchdb.plt: | all
+	dialyzer --output_plt $@ --build_plt -pa src/couchdb --apps compiler crypto erts inets kernel mnesia os_mon sasl ssl stdlib xmerl -c src/erlang-oauth src/etap src/ibrowse src/mochiweb src/snappy
+
+dialyzer: all ../couchdb.plt
+	dialyzer --plt ../couchdb.plt -pa src/couchdb -c src/couchdb
+
 install-data-hook:
 	@echo
 	@echo "You have installed Apache CouchDB, time to relax."
