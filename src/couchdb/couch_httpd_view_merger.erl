@@ -15,11 +15,21 @@
 -export([handle_req/1]).
 
 -include("couch_db.hrl").
+-include("couch_view_merger.hrl").
 
 -import(couch_util, [
     get_value/2,
-    get_value/3
+    get_value/3,
+    to_binary/1
 ]).
+
+-record(sender_acc, {
+    req = nil,
+    resp = nil,
+    on_error,
+    acc = <<>>,
+    error_acc = []
+}).
 
 
 handle_req(#httpd{method = 'GET'} = Req) ->
@@ -27,8 +37,20 @@ handle_req(#httpd{method = 'GET'} = Req) ->
     {DDocId, ViewName} = validate_viewname_param(
         couch_httpd:qs_json_value(Req, "viewname")),
     Keys = validate_keys_param(couch_httpd:qs_json_value(Req, "keys", nil)),
-    couch_view_merger:query_view(
-        Req, DDocId, ViewName, Dbs, Keys, fun http_sender/2, {Req, nil});
+    MergeParams0 = #view_merge{
+        ddoc_id = DDocId,
+        view_name = ViewName,
+        databases = Dbs,
+        keys = Keys,
+        callback = fun http_sender/2
+    },
+    MergeParams1 = apply_http_config(Req, [], MergeParams0),
+    MergeParams2 = MergeParams1#view_merge{
+        user_acc = #sender_acc{
+            req = Req, on_error = MergeParams1#view_merge.on_error
+        }
+    },
+    couch_view_merger:query_view(Req, MergeParams2);
 
 handle_req(#httpd{method = 'POST'} = Req) ->
     couch_httpd:validate_ctype(Req, "application/json"),
@@ -37,32 +59,118 @@ handle_req(#httpd{method = 'POST'} = Req) ->
     {DDocId, ViewName} = validate_viewname_param(
         get_value(<<"viewname">>, Props)),
     Keys = validate_keys_param(get_value(<<"keys">>, Props, nil)),
-    couch_view_merger:query_view(
-        Req, DDocId, ViewName, Dbs, Keys, fun http_sender/2, {Req, nil});
+    MergeParams0 = #view_merge{
+        ddoc_id = DDocId,
+        view_name = ViewName,
+        databases = Dbs,
+        keys = Keys,
+        callback = fun http_sender/2
+    },
+    MergeParams1 = apply_http_config(Req, Props, MergeParams0),
+    MergeParams2 = MergeParams1#view_merge{
+        user_acc = #sender_acc{
+            req = Req, on_error = MergeParams1#view_merge.on_error
+        }
+    },
+    couch_view_merger:query_view(Req, MergeParams2);
 
 handle_req(Req) ->
     couch_httpd:send_method_not_allowed(Req, "GET,POST").
 
 
-http_sender(start, {Req, nil}) ->
+apply_http_config(Req, Body, MergeParams) ->
+    DefConnTimeout = MergeParams#view_merge.conn_timeout,
+    ConnTimeout = case get_value(<<"connection_timeout">>, Body, nil) of
+    nil ->
+        couch_httpd:qs_json_value(Req, "connection_timeout", DefConnTimeout);
+    T when is_integer(T) ->
+        T
+    end,
+    OnError = case get_value(<<"connection_timeout">>, Body, <<"continue">>) of
+    <<"continue">> ->
+        continue;
+    <<"stop">> ->
+        stop
+    end,
+    MergeParams#view_merge{conn_timeout = ConnTimeout, on_error = OnError}.
+
+
+http_sender(start, #sender_acc{req = Req, error_acc = ErrorAcc} = SAcc) ->
     {ok, Resp} = couch_httpd:start_json_response(Req, 200, []),
     couch_httpd:send_chunk(Resp, <<"{\"rows\":[">>),
-    {Resp, <<"\r\n">>};
+    case ErrorAcc of
+    [] ->
+        Acc = <<"\r\n">>;
+    _ ->
+        lists:foreach(
+            fun(Row) -> couch_httpd:send_chunk(Resp, [Row, <<",\r\n">>]) end,
+            lists:reverse(ErrorAcc)),
+        Acc = <<>>
+    end,
+    {ok, SAcc#sender_acc{resp = Resp, acc = Acc}};
 
-http_sender({start, RowCount}, {Req, nil}) ->
+http_sender({start, RowCount}, #sender_acc{req = Req, error_acc = ErrorAcc} = SAcc) ->
     Start = io_lib:format(
         "{\"total_rows\":~w,\"rows\":[", [RowCount]),
     {ok, Resp} = couch_httpd:start_json_response(Req, 200, []),
     couch_httpd:send_chunk(Resp, Start),
-    {Resp, <<"\r\n">>};
+    case ErrorAcc of
+    [] ->
+        Acc = <<"\r\n">>;
+    _ ->
+        lists:foreach(
+            fun(Row) -> couch_httpd:send_chunk(Resp, [Row, <<",\r\n">>]) end,
+            lists:reverse(ErrorAcc)),
+        Acc = <<>>
+    end,
+    {ok, SAcc#sender_acc{resp = Resp, acc = Acc, error_acc = []}};
 
-http_sender({row, Row}, {Resp, Acc}) ->
+http_sender({row, Row}, #sender_acc{resp = Resp, acc = Acc} = SAcc) ->
     couch_httpd:send_chunk(Resp, [Acc, ?JSON_ENCODE(Row)]),
-    {Resp, <<",\r\n">>};
+    {ok, SAcc#sender_acc{acc = <<",\r\n">>}};
 
-http_sender(stop, {Resp, _Acc}) ->
+http_sender(stop, #sender_acc{resp = Resp}) ->
     couch_httpd:send_chunk(Resp, <<"\r\n]}">>),
-    couch_httpd:end_json_response(Resp).
+    {ok, couch_httpd:end_json_response(Resp)};
+
+http_sender({error, DbUrl, Reason}, #sender_acc{on_error = continue} = SAcc) ->
+    #sender_acc{resp = Resp, error_acc = ErrorAcc, acc = Acc} = SAcc,
+    Row = {[
+        {<<"error">>, true}, {<<"database">>, to_binary(DbUrl)},
+        {<<"reason">>, to_binary(Reason)}
+    ]},
+    case Resp of
+    nil ->
+        % we haven't started the response yet
+        ErrorAcc2 = [?JSON_ENCODE(Row) | ErrorAcc],
+        Acc2 = Acc;
+    _ ->
+        couch_httpd:send_chunk(Resp, [Acc, ?JSON_ENCODE(Row)]),
+        ErrorAcc2 = ErrorAcc,
+        Acc2 = <<",\r\n">>
+    end,
+    {ok, SAcc#sender_acc{error_acc = ErrorAcc2, acc = Acc2}};
+
+http_sender({error, DbUrl, Reason}, #sender_acc{on_error = stop} = SAcc) ->
+    #sender_acc{req = Req, resp = Resp, acc = Acc} = SAcc,
+    Row = {[
+        {<<"error">>, true}, {<<"database">>, to_binary(DbUrl)},
+        {<<"reason">>, to_binary(Reason)}
+    ]},
+    case Resp of
+    nil ->
+        % we haven't started the response yet
+        Start = io_lib:format("{\"total_rows\":~w,\"rows\":[\r\n", [0]),
+        {ok, Resp2} = couch_httpd:start_json_response(Req, 200, []),
+        couch_httpd:send_chunk(Resp2, Start),
+        couch_httpd:send_chunk(Resp2, ?JSON_ENCODE(Row)),
+        couch_httpd:send_chunk(Resp2, <<"\r\n]}">>);
+    _ ->
+       Resp2 = Resp,
+       couch_httpd:send_chunk(Resp2, [Acc, ?JSON_ENCODE(Row)]),
+       couch_httpd:send_chunk(Resp2, <<"\r\n]}">>)
+    end,
+    {stop, Resp2}.
 
 
 validate_databases_param([_Db1 | _Rest] = Dbs) ->
