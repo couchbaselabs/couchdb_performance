@@ -23,6 +23,7 @@
 -import(couch_util, [
     get_value/2,
     get_value/3,
+    to_binary/1,
     get_nested_json_value/2
 ]).
 
@@ -497,8 +498,7 @@ http_view_folder(DbUrl, MergeParams, DDocId, ViewName,
         Body = stream_all(ReqId, []),
         Reason = {[{code, list_to_integer(Code)}, {reason, Body}]},
         stop_conn(Conn),
-        couch_work_queue:queue(
-            Queue, {error, DbUrl, {[{code, list_to_integer(Code)}]}}),
+        couch_work_queue:queue(Queue, {error, DbUrl, Reason}),
         couch_work_queue:close(Queue);
     {ibrowse_async_response, ReqId, {error, Error}} ->
         stop_conn(Conn),
@@ -741,8 +741,14 @@ open_db(DbName, UserCtx, _MergeParams) ->
     case couch_db:open(DbName, [{user_ctx, UserCtx}]) of
     {ok, _} = Ok ->
         Ok;
+    {error, Error} ->
+        Msg = io_lib:format("Error opening database `~s`: ~s",
+            [DbName, to_binary(Error)]),
+        throw({error, iolist_to_binary(Msg)});
     Error ->
-        throw({<<"db_open_error">>, DbName, Error})
+        Msg = io_lib:format("Error opening database `~s`: ~s",
+            [DbName, to_binary(Error)]),
+        throw({error, iolist_to_binary(Msg)})
     end.
 
 
@@ -759,16 +765,22 @@ get_ddoc(#httpdb{url = BaseUrl, headers = Headers} = HttpDb, Id) ->
     {ok, "200", _RespHeaders, Body} ->
         {ok, couch_doc:from_json_obj(?JSON_DECODE(Body))};
     {ok, _Code, _RespHeaders, Body} ->
-        {error, Body};
-    Error ->
-        Error
+        Msg = io_lib:format("Error getting design document `~s` from database "
+            "`~s`: ~s", [Id, BaseUrl, Body]),
+        throw({error, iolist_to_binary(Msg)});
+    {error, Error} ->
+        Msg = io_lib:format("Error getting design document `~s` from database "
+            "`~s`: ~s", [Id, BaseUrl, Error]),
+        throw({error, iolist_to_binary(Msg)})
     end;
 get_ddoc(Db, Id) ->
-    case couch_api_wrap:open_doc(Db, Id, [ejson_body]) of
+    case couch_db:open_doc(Db, Id, [ejson_body]) of
     {ok, _} = Ok ->
         Ok;
     {error, Error} ->
-        throw({<<"ddoc_open_error">>, db_uri(Db), Error})
+        Msg = io_lib:format("Error getting design document `~s` from database "
+            "`~s`: ~s", [Id, Db#db.name, Error]),
+        throw({error, iolist_to_binary(Msg)})
     end.
 
 
