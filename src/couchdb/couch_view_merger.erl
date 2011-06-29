@@ -17,8 +17,7 @@
 -include("couch_db.hrl").
 -include("couch_view_merger.hrl").
 
--define(MAX_QUEUE_ITEMS, 3).
--define(NYI, {not_yet_implemented, ?MODULE, ?LINE}).
+-define(MAX_QUEUE_ITEMS, 1).
 
 -import(couch_util, [
     get_value/2,
